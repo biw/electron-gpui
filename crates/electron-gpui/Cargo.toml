@@ -1,0 +1,18 @@
+[package]
+name = "electron-gpui"
+description = "Host GPUI windows inside an Electron app's main process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui_macos.workspace = true
+napi.workspace = true
+napi-derive.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+subsecond.workspace = true

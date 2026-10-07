@@ -1,0 +1,111 @@
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+// Built from ./native and bundled by electron-gpui-unplugin (see vite.config.js).
+import addon from "virtual:electron-gpui/addon";
+import { app, BrowserWindow, ipcMain } from "electron";
+import { createGpui } from "electron-gpui";
+
+// Resolved relative to the bundle in dist/.
+const asset = (file) => fileURLToPath(new URL(`../${file}`, import.meta.url));
+
+const SMOKE = Boolean(process.env.ELECTRON_GPUI_SMOKE);
+
+void app.whenReady().then(() => {
+  const gpui = createGpui(addon);
+  if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
+  if (SMOKE) return runSmokeTest(gpui);
+
+  const page = new BrowserWindow({
+    width: 520,
+    height: 420,
+    x: 80,
+    y: 120,
+    title: "Electron (web)",
+    webPreferences: { preload: asset("preload.cjs") },
+  });
+  void page.loadFile(asset("index.html"));
+
+  const counter = gpui.openWindow(
+    "Counter",
+    { title: "GPUI (native)", width: 520, height: 360 },
+    { start: 0 },
+  );
+
+  // GPUI -> page
+  counter.on("event", (event) => page.webContents.send("gpui-event", event));
+  counter.on("closed", () => {
+    if (!page.isDestroyed()) page.webContents.send("gpui-event", { type: "closed" });
+  });
+
+  // page -> GPUI
+  ipcMain.on("send-to-gpui", (_event, text) => {
+    if (!counter.isClosed) counter.send({ type: "setMessage", text });
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (!SMOKE) app.quit();
+});
+
+/**
+ * Exercise the JS <-> GPUI round trip without user input: open a window, ping
+ * it, wait for the pong event, close it, and wait for the closed event.
+ */
+async function runSmokeTest(gpui) {
+  const fail = (message) => {
+    console.error(`[smoke] FAIL: ${message}`);
+    app.exit(1);
+  };
+  setTimeout(() => fail("timed out after 30s"), 30_000).unref();
+
+  try {
+    const window = gpui.openWindow("Counter", { title: "smoke", width: 300, height: 200 });
+    console.log(`[smoke] opened window ${window.id}`);
+
+    const pong = new Promise((resolve) => window.on("event", (event) => event.type === "pong" && resolve()));
+    window.send({ type: "ping" });
+    await pong;
+    console.log("[smoke] received pong");
+
+    window.send({ type: "setMessage", text: "hello from smoke test" });
+
+    // A panic in on_message becomes a JS error, and the window keeps working.
+    try {
+      window.send({ type: "panic" });
+      return fail("expected send({ type: 'panic' }) to throw");
+    } catch (error) {
+      if (!/on_message panicked/.test(error.message)) return fail(`unexpected error: ${error.message}`);
+    }
+    const pongAfterPanic = new Promise((resolve) =>
+      window.on("event", (event) => event.type === "pong" && resolve()),
+    );
+    window.send({ type: "ping" });
+    await pongAfterPanic;
+    console.log("[smoke] on_message panic became a JS error; window still responds");
+
+    const closed = new Promise((resolve) => window.once("closed", resolve));
+    window.close();
+    await closed;
+    console.log("[smoke] window closed");
+
+    if (gpui.windowCount() !== 0) return fail(`expected 0 windows, got ${gpui.windowCount()}`);
+    console.log("[smoke] PASS");
+    app.exit(0);
+  } catch (error) {
+    fail(error.stack ?? String(error));
+  }
+}
+
+/**
+ * For hot-smoke.mjs: ping the view continuously and record each pong (and this
+ * process's pid) to $ELECTRON_GPUI_SMOKE_STATUS, so the driver can see code
+ * changes arrive with or without a restart.
+ */
+function runHotSmoke(gpui) {
+  const window = gpui.openWindow("Counter", { title: "hot smoke", width: 300, height: 200 });
+  window.on("event", (event) => {
+    if (event.type !== "pong") return;
+    writeFileSync(process.env.ELECTRON_GPUI_SMOKE_STATUS, JSON.stringify({ pid: process.pid, pong: event }));
+  });
+  setInterval(() => window.send({ type: "ping" }), 100);
+}

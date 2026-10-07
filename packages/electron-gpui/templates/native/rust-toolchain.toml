@@ -1,0 +1,5 @@
+# Keep in sync with the toolchain electron-gpui's GPUI version requires.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

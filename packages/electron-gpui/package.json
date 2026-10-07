@@ -1,0 +1,68 @@
+{
+  "name": "electron-gpui",
+  "version": "0.1.1",
+  "description": "Run GPUI (Zed's UI framework) windows inside your Electron app",
+  "keywords": [
+    "electron",
+    "gpui",
+    "zed",
+    "native",
+    "macos",
+    "rust",
+    "napi"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/biw/electron-gpui.git",
+    "directory": "packages/electron-gpui"
+  },
+  "homepage": "https://github.com/biw/electron-gpui#readme",
+  "bugs": "https://github.com/biw/electron-gpui/issues",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "electron-gpui": "dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "electron": ">=30"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test run",
+    "prepack": "cp ../../LICENSE ../../NOTICE . && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

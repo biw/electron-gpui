@@ -1,0 +1,18 @@
+electron-gpui
+Copyright (c) 2026 Ben Williams
+Licensed under the MIT license (LICENSE).
+
+This project builds on GPUI, part of Zed (https://github.com/zed-industries/zed).
+GPUI and its supporting crates are Copyright 2022 - 2025 Zed Industries, Inc.,
+licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
+
+Modifications: GPUI is used from https://github.com/biw/zed (branch
+electron-gpui-embedded), which modifies crates/gpui_macos/src/platform.rs to
+add an embedded mode (MacPlatform::new_embedded) for running GPUI inside a
+host application that owns NSApp and its run loop.
+
+Hot patching uses Subsecond (https://github.com/DioxusLabs/dioxus), Copyright
+Dioxus Labs, licensed under MIT OR Apache-2.0. crates/electron-gpui-hotpatch
+adapts code from the Dioxus CLI's hot-patching engine
+(packages/cli/src/build/patch.rs), used under the MIT license.

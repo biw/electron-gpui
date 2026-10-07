@@ -1,0 +1,10 @@
+/target
+node_modules
+dist
+*.node
+.DS_Store
+# Copied in at pack time from the repo root.
+/packages/*/LICENSE
+/packages/*/NOTICE
+/examples/*/dist
+*.node.*.tmp
