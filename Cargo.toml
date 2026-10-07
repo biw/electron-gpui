@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "examples/*/native"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/biw/electron-gpui"
+publish = false
+
+[workspace.dependencies]
+electron-gpui = { path = "crates/electron-gpui" }
+# GPUI from Zed plus our embedded-mode patch (MacPlatform::new_embedded), on the
+# electron-gpui-embedded branch of https://github.com/biw/zed. See CONTRIBUTING.md.
+gpui = { git = "https://github.com/biw/zed", rev = "247b98566fc7b3708abae66b354142fee0b24c2b", default-features = false, features = [
+  "font-kit",
+] }
+gpui_macos = { git = "https://github.com/biw/zed", rev = "247b98566fc7b3708abae66b354142fee0b24c2b", features = [
+  "font-kit",
+] }
+napi = { version = "3", default-features = false, features = ["napi6"] }
+napi-derive = "3"
+napi-build = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+subsecond = "0.7.10"
+
+[profile.dev]
+# Keep target/ small: GPUI pulls in a lot of crates.
+debug = 0
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

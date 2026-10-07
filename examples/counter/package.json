@@ -1,0 +1,22 @@
+{
+  "name": "counter-example",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "vp build",
+    "dev": "../../scripts/ensure-electron.sh && NODE_ENV=development vp build --watch",
+    "start": "NODE_ENV=development vp build && ../../scripts/ensure-electron.sh && electron .",
+    "smoke": "NODE_ENV=development vp build && ../../scripts/ensure-electron.sh && ELECTRON_GPUI_SMOKE=1 electron .",
+    "smoke:hot": "../../scripts/ensure-electron.sh && node hot-smoke.mjs"
+  },
+  "dependencies": {
+    "electron-gpui": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^44",
+    "electron-gpui-unplugin": "workspace:*",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "type": "module"
+}

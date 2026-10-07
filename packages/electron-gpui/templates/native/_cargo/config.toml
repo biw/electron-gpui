@@ -1,0 +1,7 @@
+[net]
+# Use the git CLI so your git config (URL rewrites, SSH keys) applies to git dependencies.
+git-fetch-with-cli = true
+
+[env]
+# Same minimum macOS as GPUI/Zed.
+MACOSX_DEPLOYMENT_TARGET = "10.15.7"

@@ -1,0 +1,8 @@
+# Must match the toolchain of the pinned Zed revision (rust-toolchain.toml on
+# biw/zed's electron-gpui-embedded branch) and
+# packages/electron-gpui/templates/native/rust-toolchain.toml.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

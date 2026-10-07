@@ -1,0 +1,23 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Include errors and logs.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A repo or the smallest main.js + view that shows the problem.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: electron-gpui 0.1.0, Electron 44.6.0, macOS 26.1 (arm64)
+    validations:
+      required: true

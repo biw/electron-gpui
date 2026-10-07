@@ -1,0 +1,60 @@
+name: CI
+
+# macOS minutes are billed at 10x on private repos, so CI runs on pull requests,
+# on demand, and from release.yml before publishing (workflow_call).
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  ELECTRON_GPUI_NO_SWEEP: "1"
+
+jobs:
+  check:
+    name: Lint, test, licenses
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: node scripts/check-consistency.mjs
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm test
+      - name: x64 build check
+        run: cargo check --workspace --target x86_64-apple-darwin
+
+  licenses:
+    name: Dependency licenses
+    # cargo-deny-action is a container action, which GitHub runs only on Linux.
+    # deny.toml targets macOS, so the result is the same.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources
+
+  smoke:
+    name: Smoke test (Electron ${{ matrix.electron }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported (package.json peerDependencies) and newest.
+        electron: ["30", "latest"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - name: Use Electron ${{ matrix.electron }}
+        run: pnpm --filter counter-example add --save-dev electron@${{ matrix.electron }}
+      - run: pnpm smoke
+      - name: Hot reload smoke test
+        if: matrix.electron == 'latest'
+        run: pnpm --filter counter-example smoke:hot

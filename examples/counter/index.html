@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Electron (web)</title>
+    <style>
+      body {
+        font:
+          14px -apple-system,
+          sans-serif;
+        margin: 24px;
+        background: #fafafa;
+        color: #222;
+      }
+      input {
+        font: inherit;
+        padding: 6px 8px;
+        width: 260px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+      }
+      #log {
+        margin-top: 16px;
+        font:
+          12px ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Electron web page</h3>
+    <form id="form">
+      <input id="message" placeholder="Type a message for GPUI" />
+      <button type="submit">Send to GPUI</button>
+    </form>
+    <div id="log">Events from GPUI will appear here.</div>
+    <script>
+      const log = document.getElementById("log");
+      document.getElementById("form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        window.bridge.sendToGpui(document.getElementById("message").value);
+      });
+      window.bridge.onGpuiEvent((event) => {
+        log.textContent = `${JSON.stringify(event)}\n${log.textContent}`;
+      });
+    </script>
+  </body>
+</html>

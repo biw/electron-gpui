@@ -1,0 +1,46 @@
+# cargo deny check — license and source policy for everything compiled into an
+# electron-gpui addon.
+
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = false
+
+[licenses]
+# Permissive licenses only, so apps can ship addons under any license.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+# Reviewed MPL-2.0 exceptions. MPL is file-level copyleft: shipping these
+# unmodified inside a binary is fine, and their source is public on crates.io.
+exceptions = [
+  # Build-time code generator for gpui_apple; not compiled into the addon.
+  { allow = ["MPL-2.0"], crate = "cbindgen" },
+  # Pulled in by dirs-sys (via GPUI).
+  { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Zed's fork of font-kit, used by GPUI.
+allow-git = [
+  "https://github.com/zed-industries/font-kit",
+  # Zed with electron-gpui's embedded-mode patch (GPUI).
+  "https://github.com/biw/zed",
+]

@@ -1,0 +1,30 @@
+[package]
+name = "{{name}}"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+electron-gpui = {{sdk}}
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+napi-build = "2"
+
+# A standalone workspace, so this crate isn't absorbed by a parent Cargo workspace.
+[workspace]
+
+[profile.dev]
+# GPUI is large; skip debug info for dependencies to keep target/ small.
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

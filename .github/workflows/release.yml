@@ -1,0 +1,64 @@
+name: Release
+
+# Merging a version bump into main releases it: each package whose version isn't
+# on npm yet is tested, published with provenance via npm trusted publishing,
+# and electron-gpui's publish creates the vX.Y.Z GitHub release and tag (which
+# is also how apps pin the Rust SDK). Shared workflows:
+# https://github.com/biw/npm-trusted-publish-workflows
+#
+# Disabled until the repo is public (npm provenance needs a public repo): set the
+# repository variable NPM_PUBLISH_ENABLED=true, and configure trusted publishing
+# for both npm packages with this repository and `release.yml`.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-runtime:
+    if: vars.NPM_PUBLISH_ENABLED == 'true'
+    uses: biw/npm-trusted-publish-workflows/.github/workflows/check.yml@v1
+    with:
+      working-directory: packages/electron-gpui
+
+  check-plugin:
+    if: vars.NPM_PUBLISH_ENABLED == 'true'
+    uses: biw/npm-trusted-publish-workflows/.github/workflows/check.yml@v1
+    with:
+      working-directory: packages/electron-gpui-unplugin
+
+  ci:
+    needs: [check-runtime, check-plugin]
+    if: needs.check-runtime.outputs.should_publish == 'true' || needs.check-plugin.outputs.should_publish == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  publish-runtime:
+    needs: [check-runtime, ci]
+    if: needs.check-runtime.outputs.should_publish == 'true'
+    permissions:
+      contents: write
+      id-token: write
+    uses: biw/npm-trusted-publish-workflows/.github/workflows/publish.yml@v1
+    with:
+      tested-sha: ${{ github.sha }}
+      working-directory: packages/electron-gpui
+
+  # After the runtime (its peer dependency) when both are released. Shares the
+  # runtime's version, so it doesn't create a second release/tag.
+  publish-plugin:
+    needs: [check-plugin, ci, publish-runtime]
+    if: >-
+      always() && needs.ci.result == 'success' &&
+      needs.check-plugin.outputs.should_publish == 'true' &&
+      needs.publish-runtime.result != 'failure' && needs.publish-runtime.result != 'cancelled'
+    permissions:
+      contents: write
+      id-token: write
+    uses: biw/npm-trusted-publish-workflows/.github/workflows/publish.yml@v1
+    with:
+      tested-sha: ${{ github.sha }}
+      working-directory: packages/electron-gpui-unplugin
+      create-release: false

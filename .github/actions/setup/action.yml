@@ -1,0 +1,16 @@
+name: Setup
+description: Install Node, pnpm and Rust.
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v5
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+    - name: Install Rust toolchain (rust-toolchain.toml)
+      run: rustup toolchain install
+      shell: bash
+    - uses: Swatinem/rust-cache@v2
