@@ -813,8 +813,14 @@ mod tests {
         let mut object =
             WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
         for name in [".init_array", ".fini_array.100", ".ctors", ".tdata"] {
-            let section =
-                object.add_section(Vec::new(), name.as_bytes().to_vec(), SectionKind::Data);
+            let kind = if name.starts_with(".init_array") {
+                SectionKind::Elf(object::elf::SHT_INIT_ARRAY)
+            } else if name.starts_with(".fini_array") {
+                SectionKind::Elf(object::elf::SHT_FINI_ARRAY)
+            } else {
+                SectionKind::Data
+            };
+            let section = object.add_section(Vec::new(), name.as_bytes().to_vec(), kind);
             object.append_section_data(section, &[0; 8], 8);
         }
         let mut bytes = object.write().unwrap();
@@ -828,6 +834,15 @@ mod tests {
         assert!(sections.contains(&".egpui_fini.100".into()));
         assert!(sections.contains(&".egini".into()));
         assert!(sections.contains(&".tdata".into()));
+        let headers = u64_at(&bytes, 40).unwrap() as usize;
+        let stride = u16_at(&bytes, 58).unwrap() as usize;
+        for index in 0..u16_at(&bytes, 60).unwrap() as usize {
+            let kind = u32_at(&bytes, headers + index * stride + 4).unwrap();
+            assert!(!matches!(
+                kind,
+                object::elf::SHT_INIT_ARRAY | object::elf::SHT_FINI_ARRAY
+            ));
+        }
         assert_eq!(disable_initializers(&mut bytes).unwrap(), 0);
     }
 

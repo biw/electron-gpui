@@ -113,7 +113,7 @@ describe("Windows development loading", () => {
   it("loads process-owned copies and preserves an older addon across rebuilds", async () => {
     const project = mkdtempSync(path.join(tmpdir(), "egpui-copy-"));
     const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const originalDlopen = process.dlopen;
+    const originalDlopen = process.dlopen.bind(process);
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const loaded: string[] = [];
     process.dlopen = ((_target: unknown, file: string) => {

@@ -17,7 +17,10 @@ import { stopTree, viteBinary } from "../../scripts/example.mjs";
 const here = import.meta.dirname;
 const source = join(here, "native/src/lib.rs");
 const themeSource = join(here, "theme/src/lib.rs");
-const originals = new Map([source, themeSource].map((file) => [file, readFileSync(file, "utf8")]));
+const manifestSource = join(here, "native/Cargo.toml");
+const originals = new Map(
+  [source, themeSource, manifestSource].map((file) => [file, readFileSync(file, "utf8")]),
+);
 const status = join(tmpdir(), `electron-gpui-hot-smoke-${process.pid}.json`);
 const appPids = new Set();
 let output = "";
@@ -134,6 +137,15 @@ try {
   console.log(
     `[hot-smoke] dependency crate change rebuilt and restarted the app (${restarted.pid} -> ${rebuilt.pid})`,
   );
+  // The rebuilt binary may be byte-identical. Windows must still be able to
+  // emit/load it while the old process owns its loaded addon copy.
+  edit((s) => s + "\n[package.metadata.electron-gpui-smoke]\nrestart = true\n", manifestSource);
+  const configured = await waitFor(
+    "a manifest-triggered restart",
+    (s) => s.pid !== rebuilt.pid && s.pong.v === 3,
+    5 * 60_000,
+  );
+  console.log(`[hot-smoke] manifest change restarted the app (${rebuilt.pid} -> ${configured.pid})`);
   console.log("[hot-smoke] PASS");
 } catch (error) {
   failed = true;

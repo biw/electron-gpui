@@ -1,4 +1,6 @@
-use anyhow::{Context, Result, bail};
+#[cfg(target_os = "windows")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use std::{
     path::{Path, PathBuf},
     process::Command,
