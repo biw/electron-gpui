@@ -66,6 +66,8 @@ Old revisions must stay reachable on the fork (apps pin SDK tags that reference 
 
 CI checks `macos-15` (ARM64), `macos-15-intel`, `windows-2025`, and `ubuntu-24.04`. Electron 30 and latest run native window smoke tests; latest also runs state-preserving repeated hot patches, initializer suppression, compile-error recovery and structural/dependency restarts. Linux runs both Xvfb/Openbox and headless Weston with software graphics. To run the Linux harness locally: `pnpm exec node scripts/ci-smoke.mjs x11 smoke` (or `wayland`, and `smoke:hot`). PR, manual and reusable CI all use the complete matrix, and release publishing waits for it.
 
+The Wayland harness needs `libweston-13-dev` and supplies virtual keyboard/pointer capabilities for older Electron versions. It requires no physical input devices or GPU.
+
 ## Releasing
 
 Both npm packages and the Rust SDK share one version (`node scripts/check-consistency.mjs` checks it, including the plugin's peer range on `electron-gpui`).

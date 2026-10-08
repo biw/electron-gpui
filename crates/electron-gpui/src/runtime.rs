@@ -212,7 +212,8 @@ impl From<Background> for WindowBackgroundAppearance {
         match background {
             Background::Opaque => Self::Opaque,
             Background::Transparent => Self::Transparent,
-            Background::Blurred => Self::Blurred,
+            Background::Blurred if cfg!(target_os = "macos") => Self::Blurred,
+            Background::Blurred => Self::Transparent,
         }
     }
 }
@@ -497,13 +498,7 @@ pub fn open_window(
                             .filter(|_| cfg!(target_os = "macos"))
                             .map(|position| point(px(position.x), px(position.y))),
                     }),
-                    window_background: match options.background.map(Into::into).unwrap_or_default()
-                    {
-                        WindowBackgroundAppearance::Blurred if !cfg!(target_os = "macos") => {
-                            WindowBackgroundAppearance::Transparent
-                        }
-                        background => background,
-                    },
+                    window_background: options.background.map(Into::into).unwrap_or_default(),
                     focus: options.focus.unwrap_or(true),
                     is_resizable: options.resizable.unwrap_or(true),
                     window_min_size: min_size,

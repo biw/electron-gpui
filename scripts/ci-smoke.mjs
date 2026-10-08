@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const [display, command = "smoke"] = process.argv.slice(2);
 const env = { ...process.env };
@@ -49,11 +49,33 @@ try {
       runtime = mkdtempSync(join(tmpdir(), "electron-gpui-wayland-"));
       env.XDG_RUNTIME_DIR = runtime;
       env.WAYLAND_DISPLAY = "wayland-electron-gpui";
+      const module = resolve(".context/weston-seat.so");
+      const flags = spawnSync("pkg-config", ["--cflags", "--libs", "libweston-13"], {
+        encoding: "utf8",
+      });
+      if (flags.status !== 0) throw new Error(`libweston-13-dev is required: ${flags.stderr}`);
+      const compile = spawnSync(
+        "cc",
+        [
+          "-shared",
+          "-fPIC",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          join(import.meta.dirname, "weston-seat.c"),
+          "-o",
+          module,
+          ...flags.stdout.trim().split(/\s+/),
+        ],
+        { stdio: "inherit" },
+      );
+      if (compile.status !== 0) throw new Error("Could not build Weston's virtual input seat");
       const server = start(
         "weston",
         [
           "--backend=headless-backend.so",
           "--renderer=pixman",
+          `--modules=${module}`,
           `--socket=${env.WAYLAND_DISPLAY}`,
           "--idle-time=0",
           "--width=1280",

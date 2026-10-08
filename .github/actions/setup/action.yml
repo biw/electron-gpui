@@ -12,7 +12,7 @@ runs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential clang cmake pkg-config libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libglib2.0-dev libssl-dev libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri xvfb openbox weston x11-utils dbus-x11
+        sudo apt-get install -y build-essential clang cmake pkg-config libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libglib2.0-dev libssl-dev libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri xvfb openbox weston libweston-13-dev x11-utils dbus-x11
       shell: bash
     - name: Windows compiler environment
       if: runner.os == 'Windows'
