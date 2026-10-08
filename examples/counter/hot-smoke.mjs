@@ -75,6 +75,10 @@ const pong = (version) =>
   version
     ? `json!({ "type": "pong", "theme": counter_theme::NAME, "count": self.count, "v": ${version} })`
     : `json!({ "type": "pong", "theme": counter_theme::NAME, "count": self.count })`;
+const frame = (version) =>
+  version
+    ? `json!({ "type": "frame", "count": self.count, "v": ${version} })`
+    : `json!({ "type": "frame", "count": self.count })`;
 
 let failed = false;
 try {
@@ -86,8 +90,12 @@ try {
   );
   console.log(`[hot-smoke] app ${first.pid} is answering pings`);
 
-  edit((s) => s.replace(pong(), pong(2)));
-  const hot = await waitFor("the hot-patched pong", (s) => s.pong.v === 2, 120_000);
+  edit((s) => s.replace(pong(), pong(2)).replace(frame(), frame(2)));
+  const hot = await waitFor(
+    "the hot-patched message and render",
+    (s) => s.pong.v === 2 && s.frame?.v === 2,
+    120_000,
+  );
   if (hot.pid !== first.pid)
     throw new Error(`expected a hot patch, but the app restarted (${first.pid} -> ${hot.pid})`);
   console.log(`[hot-smoke] code change hot-patched into ${hot.pid} without a restart`);
@@ -97,8 +105,12 @@ try {
     if (readFileSync(file, "utf8") !== "I") throw new Error("patch re-ran static initializers");
   };
   checkInitializer(hot.pid);
-  edit((s) => s.replace(pong(2), pong(4)));
-  const second = await waitFor("a second hot patch", (s) => s.pong.v === 4 && s.frame?.count === 7, 120_000);
+  edit((s) => s.replace(pong(2), pong(4)).replace(frame(2), frame(4)));
+  const second = await waitFor(
+    "a second hot patch",
+    (s) => s.pong.v === 4 && s.frame?.v === 4 && s.frame.count === 7,
+    120_000,
+  );
   if (second.pid !== first.pid || second.pong.count !== 7)
     throw new Error("second patch restarted or lost state");
   checkInitializer(second.pid);
