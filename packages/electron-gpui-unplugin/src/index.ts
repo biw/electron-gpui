@@ -5,6 +5,7 @@ import {
   ADDON_PATH_PLACEHOLDER,
   addonModuleCode,
   crateWatchFiles,
+  developmentAsset,
   type ElectronGpuiOptions,
   ensureBuild,
   invalidateBuild,
@@ -50,6 +51,8 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
     let hot: HotSession | undefined;
     let hotChecked = false;
     let dependencyDirs: string[] | undefined;
+    let emittedAddon = options.assetFileName;
+    let generatedModule: string | undefined;
 
     /** Local crates the views crate depends on (watch mode only). */
     function localDependencies(): string[] {
@@ -99,7 +102,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
     }
 
     function renderChunk(code: string, chunk: { fileName: string }) {
-      const resolved = resolveAddonPath(code, chunk.fileName, options.assetFileName);
+      const resolved = resolveAddonPath(code, chunk.fileName, emittedAddon);
       return resolved === undefined ? null : { code: resolved, map: null };
     }
 
@@ -135,11 +138,21 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
           }
         }
         const source = readAddon();
+        emittedAddon =
+          watchMode && !options.release
+            ? developmentAsset(options.assetFileName, source)
+            : options.assetFileName;
+        if (generatedModule) {
+          writeFileSync(
+            generatedModule,
+            addonModuleCode(path.posix.basename(emittedAddon), undefined, watchMode && !options.release),
+          );
+        }
 
         if (isEsbuild && esbuildOutput?.outfile) {
           // An outfile defines the bundle's directory; put the addon beside it.
           const outfile = path.resolve(esbuildOutput.absWorkingDir ?? process.cwd(), esbuildOutput.outfile);
-          const destination = path.join(path.dirname(outfile), path.posix.basename(options.assetFileName));
+          const destination = path.join(path.dirname(outfile), path.posix.basename(emittedAddon));
           mkdirSync(path.dirname(destination), { recursive: true });
           copyFileSync(options.builtAddon, destination);
           return;
@@ -147,7 +160,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
         if (isEsbuild && !esbuildOutput?.outdir) {
           throw new Error("electron-gpui: the esbuild plugin needs `outdir` or `outfile`");
         }
-        this.emitFile({ type: "asset", fileName: options.assetFileName, source });
+        this.emitFile({ type: "asset", fileName: emittedAddon, source });
       },
 
       resolveId(id) {
@@ -161,8 +174,9 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
       load(id) {
         if (id !== RESOLVED_VIRTUAL_MODULE_ID) return;
         return addonModuleCode(
-          isRollupFamily ? ADDON_PATH_PLACEHOLDER : path.posix.basename(options.assetFileName),
+          isRollupFamily ? ADDON_PATH_PLACEHOLDER : path.posix.basename(emittedAddon),
           hot?.dir,
+          watchMode && !options.release,
         );
       },
 
@@ -204,8 +218,9 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
         // webpack rejects `virtual:` URLs before plugins can resolve them, so point
         // the import at a generated file with the same code.
         const generated = path.join(options.projectDir, "node_modules", ".electron-gpui", "addon.mjs");
+        generatedModule = generated;
         mkdirSync(path.dirname(generated), { recursive: true });
-        writeFileSync(generated, addonModuleCode(path.posix.basename(options.assetFileName)));
+        writeFileSync(generated, addonModuleCode(path.posix.basename(emittedAddon)));
         new compiler.webpack.NormalModuleReplacementPlugin(/^virtual:electron-gpui\/addon$/, (resource) => {
           resource.request = generated;
         }).apply(compiler);

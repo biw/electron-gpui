@@ -10,7 +10,7 @@
     "test": "pnpm --filter './packages/*' test && cargo test --workspace",
     "lint": "pnpm build && vp check && cargo fmt -p electron-gpui -p electron-gpui-hotpatch -p counter-native -p counter-theme --check && cargo clippy --workspace --all-targets -- -D warnings",
     "format": "vp fmt && cargo fmt -p electron-gpui -p electron-gpui-hotpatch -p counter-native -p counter-theme",
-    "clean:cargo": "./scripts/sweep-cargo.sh --force",
+    "clean:cargo": "node scripts/sweep-cargo.mjs --force",
     "changeset": "changeset",
     "smoke:hot": "pnpm build:example && pnpm --filter counter-example smoke:hot"
   },

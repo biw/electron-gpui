@@ -4,10 +4,10 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "vp build",
-    "dev": "../../scripts/ensure-electron.sh && NODE_ENV=development vp build --watch",
-    "start": "NODE_ENV=development vp build && ../../scripts/ensure-electron.sh && electron .",
-    "smoke": "NODE_ENV=development vp build && ../../scripts/ensure-electron.sh && ELECTRON_GPUI_SMOKE=1 electron .",
-    "smoke:hot": "../../scripts/ensure-electron.sh && node hot-smoke.mjs"
+    "dev": "node ../../scripts/example.mjs dev",
+    "start": "node ../../scripts/example.mjs start",
+    "smoke": "node ../../scripts/example.mjs smoke",
+    "smoke:hot": "node ../../scripts/example.mjs hot"
   },
   "dependencies": {
     "electron-gpui": "workspace:*"

@@ -1,6 +1,6 @@
 # electron-gpui
 
-Run [GPUI](https://gpui.rs) — the UI framework behind the [Zed](https://zed.dev) editor — inside your Electron app. macOS only, pre-release.
+Run [GPUI](https://gpui.rs) — the UI framework behind the [Zed](https://zed.dev) editor — inside your Electron app. Supports macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). Pre-release.
 
 ```sh
 pnpm add electron-gpui

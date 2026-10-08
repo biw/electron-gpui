@@ -2,7 +2,9 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
 import { type HotAddon, hotConfigOf, startHotClient } from "./hot.js";
+import { startEventPump } from "./platform.js";
 
 /** Protocol version this package speaks. Must match the Rust SDK's `PROTOCOL_VERSION`. */
 export const PROTOCOL_VERSION = 1;
@@ -18,6 +20,8 @@ export interface GpuiAddon {
   close(windowId: number): void;
   windowCount(): number;
   shutdown(): void;
+  /** Internal Linux event dispatch; optional for older SDKs. */
+  pollEvents?(): void;
   /** Present in addons built with SDK 0.2 or later. */
   setAlwaysOnTop?(windowId: number, onTop: boolean, relativeLevel?: number | null): void;
   setPanicLog?(path?: string | null): void;
@@ -156,6 +160,8 @@ export interface CreateGpuiOptions {
 export class Gpui extends EventEmitter<GpuiEvents> {
   readonly #windows = new Map<number, GpuiWindow>();
   #shutDown = false;
+  #pump: ReturnType<typeof startEventPump> | undefined;
+  #stopHot: (() => void) | undefined;
 
   /** @internal */
   constructor(
@@ -171,6 +177,12 @@ export class Gpui extends EventEmitter<GpuiEvents> {
     }
     addon.init();
     addon.onEvent((json) => this.#dispatch(json));
+    if (process.platform === "linux" && addon.pollEvents) {
+      this.#pump = startEventPump(
+        () => addon.pollEvents!(),
+        () => this.#windows.size > 0,
+      );
+    }
   }
 
   /**
@@ -190,6 +202,7 @@ export class Gpui extends EventEmitter<GpuiEvents> {
     );
     const window = new GpuiWindow<Message, Event>(this, id, view);
     this.#windows.set(id, window as GpuiWindow);
+    this.#pump?.updateReference();
     return window;
   }
 
@@ -206,6 +219,8 @@ export class Gpui extends EventEmitter<GpuiEvents> {
   shutdown(): void {
     if (this.#shutDown) return;
     this.#shutDown = true;
+    this.#pump?.stop();
+    this.#stopHot?.();
     this.addon.shutdown();
     for (const window of this.#windows.values()) window._markClosed();
     this.#windows.clear();
@@ -226,10 +241,16 @@ export class Gpui extends EventEmitter<GpuiEvents> {
       window.emit("event", event.payload);
     } else if (event.type === "closed") {
       this.#windows.delete(event.windowId);
+      this.#pump?.updateReference();
       window._markClosed();
       this.emit("window-closed", window);
       if (this.#windows.size === 0) this.emit("all-windows-closed");
     }
+  }
+
+  /** @internal */
+  _attachHotClient(stop: () => void): void {
+    this.#stopHot = stop;
   }
 }
 
@@ -257,7 +278,7 @@ export function createGpui(addon: GpuiAddon | string | URL, options: CreateGpuiO
   // Dev builds from electron-gpui-unplugin carry a hot-reload channel.
   const hot = hotConfigOf(loaded);
   if (hot && loaded.hotAnchor && loaded.applyHotPatch) {
-    startHotClient(loaded as GpuiAddon & HotAddon, hot);
+    gpui._attachHotClient(startHotClient(loaded as GpuiAddon & HotAddon, hot));
   }
   current = gpui;
   return gpui;
@@ -294,6 +315,7 @@ function checkProtocol(addon: GpuiAddon): void {
 }
 
 function assertMainProcess(): void {
+  if (!isMainThread) throw new Error("electron-gpui: must be used on the main thread, not a worker");
   const type = (process as NodeJS.Process & { type?: string }).type;
   if (process.versions.electron && type !== "browser") {
     throw new Error(
@@ -310,5 +332,6 @@ function defaultElectronApp(): ElectronAppLike | null {
 
 /** @internal Reset the singleton; for tests. */
 export function _resetForTests(): void {
+  current?.shutdown();
   current = undefined;
 }

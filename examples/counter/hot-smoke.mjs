@@ -7,23 +7,26 @@
 // It also checks the patch doesn't run the crate's static initializers (the
 // counter's GPUI action registrations) a second time.
 // The source files are always restored.
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { stopTree, viteBinary } from "../../scripts/example.mjs";
 
 const here = import.meta.dirname;
 const source = join(here, "native/src/lib.rs");
 const themeSource = join(here, "theme/src/lib.rs");
 const originals = new Map([source, themeSource].map((file) => [file, readFileSync(file, "utf8")]));
 const status = join(tmpdir(), `electron-gpui-hot-smoke-${process.pid}.json`);
+const appPids = new Set();
+let output = "";
 const deadline = (ms) => Date.now() + ms;
-const patchBuilds = join(here, "../../target/electron-gpui-hot/counter_native");
 
-const dev = spawn(join(here, "node_modules/.bin/vp"), ["build", "--watch"], {
+const dev = spawn(process.execPath, [viteBinary(here), "build", "--watch"], {
   cwd: here,
-  stdio: ["ignore", "inherit", "inherit"],
-  detached: true,
+  stdio: ["ignore", "pipe", "pipe"],
+  detached: process.platform !== "win32",
   env: {
     ...process.env,
     NODE_ENV: "development",
@@ -32,9 +35,18 @@ const dev = spawn(join(here, "node_modules/.bin/vp"), ["build", "--watch"], {
   },
 });
 
+for (const stream of [dev.stdout, dev.stderr]) {
+  stream?.on("data", (chunk) => {
+    output = (output + chunk.toString()).slice(-64 * 1024);
+    process.stdout.write(chunk);
+  });
+}
+
 function readStatus() {
   try {
-    return JSON.parse(readFileSync(status, "utf8"));
+    const value = JSON.parse(readFileSync(status, "utf8"));
+    appPids.add(value.pid);
+    return value;
   } catch {
     return undefined;
   }
@@ -50,17 +62,6 @@ async function waitFor(description, predicate, ms) {
   throw new Error(`timed out waiting for ${description}; last status: ${JSON.stringify(readStatus())}`);
 }
 
-/** The most recently linked patch dylib. */
-function newestPatch() {
-  const builds = readdirSync(patchBuilds)
-    .filter((name) => name.startsWith("patch-"))
-    .map((name) => join(patchBuilds, name, "libcounter_native-patch.dylib"))
-    .filter((file) => existsSync(file))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  if (builds.length === 0) throw new Error(`no patch dylib in ${patchBuilds}`);
-  return builds[0];
-}
-
 function edit(transform, file = source) {
   const next = transform(readFileSync(file, "utf8"));
   if (next === readFileSync(file, "utf8")) throw new Error(`edit didn't change ${file}`);
@@ -69,13 +70,17 @@ function edit(transform, file = source) {
 
 const pong = (version) =>
   version
-    ? `json!({ "type": "pong", "theme": counter_theme::NAME, "v": ${version} })`
-    : `json!({ "type": "pong", "theme": counter_theme::NAME })`;
+    ? `json!({ "type": "pong", "theme": counter_theme::NAME, "count": self.count, "v": ${version} })`
+    : `json!({ "type": "pong", "theme": counter_theme::NAME, "count": self.count })`;
 
 let failed = false;
 try {
   // First build compiles GPUI for the patchable build; allow time for it.
-  const first = await waitFor("the app to answer pings", (s) => s.pong.v === undefined, 10 * 60_000);
+  const first = await waitFor(
+    "the app to answer pings",
+    (s) => s.pong.v === undefined && s.frame?.count === 7,
+    20 * 60_000,
+  );
   console.log(`[hot-smoke] app ${first.pid} is answering pings`);
 
   edit((s) => s.replace(pong(), pong(2)));
@@ -83,11 +88,29 @@ try {
   if (hot.pid !== first.pid)
     throw new Error(`expected a hot patch, but the app restarted (${first.pid} -> ${hot.pid})`);
   console.log(`[hot-smoke] code change hot-patched into ${hot.pid} without a restart`);
-  const loadCommands = execFileSync("otool", ["-l", newestPatch()], { encoding: "utf8" });
-  if (/__mod_init_func|__mod_term_func|__init_offsets/.test(loadCommands)) {
-    throw new Error("the patch dylib runs static initializers again");
-  }
-  console.log("[hot-smoke] the patch doesn't re-run static initializers");
+  if (hot.pong.count !== 7) throw new Error("hot patch lost the view's counter state");
+  const checkInitializer = (pid) => {
+    const file = `${status}.init-${pid}`;
+    if (readFileSync(file, "utf8") !== "I") throw new Error("patch re-ran static initializers");
+  };
+  checkInitializer(hot.pid);
+  edit((s) => s.replace(pong(2), pong(4)));
+  const second = await waitFor("a second hot patch", (s) => s.pong.v === 4 && s.frame?.count === 7, 120_000);
+  if (second.pid !== first.pid || second.pong.count !== 7)
+    throw new Error("second patch restarted or lost state");
+  checkInitializer(second.pid);
+  edit((s) => s.replace(pong(4), 'compile_error!("hot smoke compile error"); ' + pong(4)));
+  const stillRunning = await waitFor(
+    "a compile error with the app still running",
+    (s) => output.includes("hot smoke compile error") && s.pid === first.pid && s.pong.v === 4,
+    120_000,
+  );
+  if (stillRunning?.pid !== first.pid || stillRunning.pong.v !== 4)
+    throw new Error("compile error stopped the running app");
+  edit((s) => s.replace('compile_error!("hot smoke compile error"); ', ""));
+  console.log(
+    "[hot-smoke] repeated patches preserve state and skip initializers; compile errors leave the app running",
+  );
 
   edit((s) =>
     s
@@ -96,7 +119,7 @@ try {
         '            count: props["start"].as_i64().unwrap_or(0),\n',
         '            count: props["start"].as_i64().unwrap_or(0),\n            smoke_field: 0,\n',
       )
-      .replace(pong(2), pong(3)),
+      .replace(pong(4), pong(3)),
   );
   const restarted = await waitFor("the restarted app's pong", (s) => s.pong.v === 3, 5 * 60_000);
   if (restarted.pid === hot.pid)
@@ -118,16 +141,11 @@ try {
 } finally {
   for (const [file, contents] of originals) writeFileSync(file, contents);
   if (existsSync(status)) rmSync(status);
-  // Stop vite and the app it launched (same process group).
-  const kill = (signal) => {
-    try {
-      if (dev.pid) process.kill(-dev.pid, signal);
-    } catch {
-      // Already exited.
-    }
-  };
-  kill("SIGTERM");
+  for (const name of appPids) {
+    if (name) rmSync(`${status}.init-${name}`, { force: true });
+  }
+  stopTree(dev, "SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, 2000));
-  kill("SIGKILL");
+  stopTree(dev, "SIGKILL");
 }
 process.exit(failed ? 1 : 0);

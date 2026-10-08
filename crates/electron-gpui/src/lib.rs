@@ -1,6 +1,6 @@
 //! Host [GPUI](https://gpui.rs) windows inside an Electron app's main process.
 //!
-//! Electron owns `NSApp` and the run loop. GPUI runs embedded in it and opens its
+//! Electron owns the application and the run loop. GPUI runs embedded in it and opens its
 //! own native windows, each rendering a [`RootView`] you register with [`export!`].
 //! The `electron-gpui` npm package loads the resulting `.node` addon and gives
 //! Electron's main process a typed API for opening windows and exchanging JSON
@@ -33,7 +33,9 @@
 mod bridge;
 mod export;
 mod hot;
+#[cfg(target_os = "macos")]
 pub mod macos;
+mod platform;
 mod runtime;
 
 pub use bridge::WindowBridge;
@@ -80,9 +82,21 @@ pub trait RootView: gpui::Render + Sized + 'static {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::runtime::{
-        apply_hot_patch, close, hot_anchor, init, open_window, send, set_always_on_top,
-        set_event_callback, set_panic_log, shutdown, window_count,
+        apply_hot_patch, close, hot_anchor, init, open_window, poll_events, send,
+        set_always_on_top, set_event_callback, set_panic_log, shutdown, window_count,
     };
     pub use napi;
     pub use napi_derive;
+}
+
+/// Keep a window above normal windows when supported by its window system.
+/// `relative_level` affects macOS only; ordinary Wayland windows ignore this request.
+pub fn set_always_on_top(window: &gpui::Window, on_top: bool, relative_level: isize) {
+    #[cfg(target_os = "macos")]
+    macos::set_always_on_top(window, on_top, relative_level);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = relative_level;
+        window.set_always_on_top(on_top);
+    }
 }

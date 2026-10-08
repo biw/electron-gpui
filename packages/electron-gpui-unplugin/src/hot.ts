@@ -203,7 +203,11 @@ export class HotSession {
       this.options.crateDir,
     );
     if (code !== 0) throw new Error("electron-gpui: building the hot-patch tool failed");
-    this.#tool = path.join(toolTarget, "release", "electron-gpui-hotpatch");
+    this.#tool = path.join(
+      toolTarget,
+      "release",
+      process.platform === "win32" ? "electron-gpui-hotpatch.exe" : "electron-gpui-hotpatch",
+    );
     return this.#tool;
   }
 

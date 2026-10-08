@@ -2,7 +2,7 @@
 
 Run [GPUI](https://gpui.rs), the GPU-accelerated UI framework behind [Zed](https://zed.dev), inside your Electron app. Write views in Rust, drive them from JavaScript, and edit them with hot reload.
 
-> **Pre-release.** macOS only (Apple silicon and Intel). APIs may change before 1.0.
+> **Pre-release.** Supports macOS (Apple silicon and Intel), Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). APIs may change before 1.0.
 
 ```js
 import { app } from "electron";
@@ -17,11 +17,11 @@ app.whenReady().then(() => {
 });
 ```
 
-GPUI windows live in Electron's main process alongside your `BrowserWindow`s: one app, one Dock icon, one menu bar.
+GPUI windows live in Electron's main process alongside your `BrowserWindow`s.
 
 ## Quick start
 
-Requires macOS 10.15.7+, Electron 30+, Node 20.19+ and [Rust](https://rustup.rs) (the toolchain installs itself).
+Requires Electron 30+, Node 20.19+ and [Rust](https://rustup.rs) (the toolchain installs itself). Windows builds need Visual Studio's C++ Build Tools and Windows SDK. Linux builds need a C/C++ compiler, pkg-config, and Fontconfig, FreeType, XCB, XKB, Wayland, GLib and OpenSSL development packages; see [the CI setup](.github/actions/setup/action.yml) for Ubuntu packages. Linux uses your current X11 or Wayland session. Windows/Linux ARM64 and musl builds are outside the supported targets.
 
 **1. Install and scaffold a views crate**
 
@@ -128,13 +128,15 @@ Hot patching uses [Subsecond](https://github.com/DioxusLabs/dioxus/tree/main/pac
 
 `openWindow<Message, Event>(...)` takes type parameters for your message and event shapes.
 
-**Rust** (`electron-gpui` crate): implement `RootView` (`new`, `on_message`) and `Render`, emit events with `WindowBridge::emit`, and register views with `export! { "Name" => View }`. `electron_gpui::gpui` and `electron_gpui::serde_json` re-export the versions the SDK uses. GPUI's macros (`actions!`, `#[derive(IntoElement)]`, `#[derive(Action)]`, ...) expand to `gpui::` paths, so files that use them need `use electron_gpui::gpui;`. `electron_gpui::macos::set_always_on_top(window, flag, relative_level)` changes a window's level from Rust (for example, from `cx.observe_window_activation`).
+**Rust** (`electron-gpui` crate): implement `RootView` (`new`, `on_message`) and `Render`, emit events with `WindowBridge::emit`, and register views with `export! { "Name" => View }`. `electron_gpui::gpui` and `electron_gpui::serde_json` re-export the versions the SDK uses. GPUI's macros (`actions!`, `#[derive(IntoElement)]`, `#[derive(Action)]`, ...) expand to `gpui::` paths, so files that use them need `use electron_gpui::gpui;`. `electron_gpui::set_always_on_top(window, flag, relative_level)` works across platforms. The existing `electron_gpui::macos::set_always_on_top` helper remains available on macOS.
 
 **CLI**: `electron-gpui init [dir] [--local <path>]` scaffolds a views crate. `electron-gpui build [dir] [--release] [--universal]` builds `<dir>/index.node` by hand (the plugin does this for you). Without a bundler, pass `new URL("./native/index.node", import.meta.url)` to `createGpui`.
 
+Window options are best effort. Traffic-light placement and hidden transparent titlebars apply on macOS; Windows and Linux use native titlebars. Blurred backgrounds fall back to transparency outside macOS, subject to compositor support. Always-on-top uses Windows topmost and X11 EWMH; ordinary Wayland windows have no portable topmost protocol, so the request is a no-op. `relativeLevel` affects macOS only. Positioning and focus on Wayland also depend on the compositor.
+
 ## Shipping
 
-- Production builds (`NODE_ENV=production`, which `vite build` sets) use `--release`. `electronGpui({ universal: true })` produces one addon for Apple silicon and Intel.
+- Production builds (`NODE_ENV=production`, which `vite build` sets) use `--release`. `electronGpui({ universal: true })` is macOS-only and installs both Apple Rust targets before producing one addon for Apple silicon and Intel. Build Windows and Linux addons on their respective platforms.
 - For the rest of your app's native modules, use [vite-plugin-native-modules](https://github.com/biw/vite-plugin-native-modules), which bundles `.node` dependencies (`node-gyp-build`, `bindings`, NAPI-RS) the same way.
 - Native addons can't load from inside an asar archive, so unpack them (electron-builder: `asarUnpack: ["**/*.node"]`).
 
@@ -149,7 +151,9 @@ Hot patching uses [Subsecond](https://github.com/DioxusLabs/dioxus/tree/main/pac
 
 ## How it works
 
-GPUI normally owns the whole macOS app. electron-gpui runs it in an embedded mode (a small patch to GPUI's macOS platform) that leaves `NSApp`, the menu bar and the run loop to Electron. Your views, GPUI and the SDK compile into one `.node` addon, because Rust has no stable ABI for sharing GPUI between libraries. That addon is called directly from Electron's main thread. For hot reload, the plugin keeps a patchable build of your crate, recompiles changed code into a small library on each save, and has Subsecond redirect calls to it.
+GPUI runs in an embedded mode that leaves the application's event loop to Electron. macOS shares `NSApp`; Windows hooks only GPUI window messages and can fall back to Direct3D WARP; Linux dispatches X11 or Wayland events through a nonblocking calloop poll every 8 ms on Electron's main thread. The Linux timer keeps the process alive while GPUI windows are open and stops on shutdown. Older addons without the optional polling export remain compatible.
+
+Your views, GPUI and the SDK compile into one `.node` addon, because Rust has no stable ABI for sharing GPUI between libraries. For hot reload, the plugin keeps a patchable build, recompiles changed code into a Mach-O, ELF or PE library, and has Subsecond redirect calls to it. Development addons use content-addressed filenames. Windows loads a process-owned copy so rebuilding never overwrites a loaded DLL; locked files are cleaned up after their process exits. Applied patch libraries remain loaded for the lifetime of the app.
 
 ## Contributing
 

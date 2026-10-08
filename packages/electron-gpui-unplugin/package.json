@@ -104,7 +104,7 @@
   "scripts": {
     "build": "vp pack",
     "test": "vp test run",
-    "prepack": "cp ../../LICENSE ../../NOTICE . && pnpm build"
+    "prepack": "node ../../scripts/package-files.mjs && pnpm build"
   },
   "peerDependencies": {
     "electron-gpui": "^0.2.0"

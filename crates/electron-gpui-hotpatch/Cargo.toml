@@ -14,3 +14,8 @@ object = { version = "0.37", features = ["all"] }
 serde.workspace = true
 serde_json.workspace = true
 subsecond-types = "0.7.10"
+pdb = "0.8"
+shell-words = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+cc = "1"

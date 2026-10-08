@@ -9,13 +9,16 @@ publish.workspace = true
 
 [dependencies]
 gpui.workspace = true
-gpui_macos.workspace = true
 napi.workspace = true
 napi-derive.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 subsecond.workspace = true
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos.workspace = true
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
   "std",
@@ -23,4 +26,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSView",
   "NSWindow",
 ] }
-raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux.workspace = true
+libc = "0.2"

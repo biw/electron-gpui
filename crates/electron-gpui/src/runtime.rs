@@ -9,7 +9,6 @@ use std::{
     any::Any,
     cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::c_int,
     io::Write as _,
     panic::{self, AssertUnwindSafe, PanicHookInfo, catch_unwind},
     path::PathBuf,
@@ -23,7 +22,6 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowId, WindowOptions, point, px,
     size,
 };
-use gpui_macos::MacPlatform;
 use napi::{
     Error, Result, Status,
     bindgen_prelude::Function,
@@ -35,6 +33,7 @@ use serde_json::Value;
 use crate::{
     RootView, WindowBridge,
     hot::{self, HotRoot},
+    platform,
 };
 
 type EventCallback = ThreadsafeFunction<String, (), String, Status, false>;
@@ -118,7 +117,7 @@ impl<V: RootView> AnyRootWindow for WindowHandle<HotRoot<V>> {
         relative_level: isize,
     ) -> anyhow::Result<()> {
         self.update(cx, |_, window, _| {
-            crate::macos::set_always_on_top(window, on_top, relative_level)
+            crate::set_always_on_top(window, on_top, relative_level)
         })
     }
 }
@@ -129,6 +128,7 @@ struct OpenedWindow {
 }
 
 struct Runtime {
+    platform: Rc<platform::EmbeddedPlatform>,
     app: Rc<ApplicationHandle>,
     registry: Rc<Registry>,
     windows: HashMap<u32, OpenedWindow>,
@@ -258,10 +258,7 @@ fn panic_detail(payload: &(dyn Any + Send)) -> String {
 }
 
 fn is_main_thread() -> bool {
-    unsafe extern "C" {
-        fn pthread_main_np() -> c_int;
-    }
-    unsafe { pthread_main_np() == 1 }
+    platform::is_main_thread()
 }
 
 /// Install (once) a panic hook that reports panics GPUI can't recover from and
@@ -374,35 +371,39 @@ pub(crate) fn emit(event: Value) {
 /// Start GPUI inside Electron. Idempotent.
 pub fn init(registry: impl FnOnce() -> Registry) -> Result<()> {
     guard("init", || {
+        platform::record_main_thread();
         ensure_main_thread()?;
         install_panic_hook();
         if RUNTIME.with(|runtime| runtime.borrow().is_some()) {
             return Ok(());
         }
 
-        let platform = Rc::new(MacPlatform::new_embedded());
-        let app = Application::with_platform(platform).run_embedded(|cx| {
-            // Covers windows closed by the user as well as by `close()`.
-            cx.on_window_closed(|_, gpui_id| {
-                let window_id = RUNTIME.with(|runtime| {
-                    let mut runtime = runtime.borrow_mut();
-                    let runtime = runtime.as_mut()?;
-                    let window_id = runtime
-                        .windows
-                        .iter()
-                        .find_map(|(id, window)| (window.gpui_id == gpui_id).then_some(*id))?;
-                    runtime.windows.remove(&window_id);
-                    Some(window_id)
-                });
-                if let Some(window_id) = window_id {
-                    emit(serde_json::json!({ "windowId": window_id, "type": "closed" }));
-                }
-            })
-            .detach();
-        });
+        let platform = Rc::new(platform::new()?);
+        let app = Application::with_platform(platform.clone())
+            .with_quit_mode(gpui::QuitMode::Explicit)
+            .run_embedded(|cx| {
+                // Covers windows closed by the user as well as by `close()`.
+                cx.on_window_closed(|_, gpui_id| {
+                    let window_id = RUNTIME.with(|runtime| {
+                        let mut runtime = runtime.borrow_mut();
+                        let runtime = runtime.as_mut()?;
+                        let window_id = runtime
+                            .windows
+                            .iter()
+                            .find_map(|(id, window)| (window.gpui_id == gpui_id).then_some(*id))?;
+                        runtime.windows.remove(&window_id);
+                        Some(window_id)
+                    });
+                    if let Some(window_id) = window_id {
+                        emit(serde_json::json!({ "windowId": window_id, "type": "closed" }));
+                    }
+                })
+                .detach();
+            });
 
         RUNTIME.with(|runtime| {
             *runtime.borrow_mut() = Some(Runtime {
+                platform,
                 app: Rc::new(app),
                 registry: Rc::new(registry()),
                 windows: HashMap::new(),
@@ -411,6 +412,15 @@ pub fn init(registry: impl FnOnce() -> Registry) -> Result<()> {
             })
         });
         Ok(())
+    })
+}
+
+/// Dispatch Linux's pending platform events without blocking Electron.
+pub fn poll_events() -> Result<()> {
+    guard("pollEvents", || {
+        ensure_main_thread()?;
+        let platform = with_runtime(|runtime| Ok(runtime.platform.clone()))?;
+        platform::poll(&platform)
     })
 }
 
@@ -475,12 +485,20 @@ pub fn open_window(
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
                         title: options.title.map(Into::into),
-                        appears_transparent: options.title_bar_style == Some(TitleBarStyle::Hidden),
+                        appears_transparent: cfg!(target_os = "macos")
+                            && options.title_bar_style == Some(TitleBarStyle::Hidden),
                         traffic_light_position: options
                             .traffic_light_position
+                            .filter(|_| cfg!(target_os = "macos"))
                             .map(|position| point(px(position.x), px(position.y))),
                     }),
-                    window_background: options.background.map(Into::into).unwrap_or_default(),
+                    window_background: match options.background.map(Into::into).unwrap_or_default()
+                    {
+                        WindowBackgroundAppearance::Blurred if !cfg!(target_os = "macos") => {
+                            WindowBackgroundAppearance::Transparent
+                        }
+                        background => background,
+                    },
                     focus: options.focus.unwrap_or(true),
                     is_resizable: options.resizable.unwrap_or(true),
                     window_min_size: min_size,
@@ -529,7 +547,7 @@ pub fn send(window_id: u32, message_json: String) -> Result<()> {
     })
 }
 
-/// Keep a window above normal windows (see [`crate::macos::set_always_on_top`]).
+/// Keep a window above normal windows (see [`crate::set_always_on_top`]).
 pub fn set_always_on_top(window_id: u32, on_top: bool, relative_level: Option<i32>) -> Result<()> {
     guard("setAlwaysOnTop", || {
         ensure_main_thread()?;

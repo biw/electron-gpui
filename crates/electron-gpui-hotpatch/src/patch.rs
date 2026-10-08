@@ -1,4 +1,4 @@
-//! Patch-object generation and jump tables, for Mach-O (macOS arm64/x86_64).
+//! Patch-object generation and jump tables for Mach-O, ELF, and Windows COFF/PE.
 //!
 //! Adapted from the Dioxus CLI's hot-patching engine
 //! (`packages/cli/src/build/patch.rs`, https://github.com/DioxusLabs/dioxus),
@@ -26,22 +26,26 @@ use object::{
 };
 use subsecond_types::{AddressMap, JumpTable};
 
-/// Mach-O name of the anchor symbol exported by the electron-gpui SDK.
-pub const ANCHOR_SYMBOL: &str = "_electron_gpui_hot_anchor";
+/// Anchor symbol exported by the electron-gpui SDK (prefixed with `_` on Mach-O).
+pub const ANCHOR_SYMBOL: &str = "electron_gpui_hot_anchor";
 
 /// Subsecond's runtime looks up `main` in each patch to find where it loaded.
-const PATCH_SENTINEL: &str = "_main";
+const PATCH_SENTINEL: &str = "main";
 
 pub struct CachedSymbol {
     pub address: u64,
     pub kind: SymbolKind,
     pub is_undefined: bool,
     pub is_weak: bool,
+    pub size: u64,
+    pub flags: object::SymbolFlags<object::write::SectionId, object::write::SymbolId>,
 }
 
 /// The original addon's full symbol table and TLS initializers.
 pub struct ModuleCache {
     pub symbols: HashMap<String, CachedSymbol>,
+    pub format: BinaryFormat,
+    pub architecture: Architecture,
     tls_init_data: Vec<u8>,
     /// `$tlv$init` symbol name -> (offset in `__thread_data`, size).
     tls_init_sizes: HashMap<String, (u64, u64)>,
@@ -52,7 +56,7 @@ impl ModuleCache {
         let bytes =
             std::fs::read(original).with_context(|| format!("reading {}", original.display()))?;
         let obj = File::parse(&*bytes)?;
-        let symbols = obj
+        let mut symbols = obj
             .symbols()
             .filter_map(|s| {
                 Some((
@@ -62,14 +66,26 @@ impl ModuleCache {
                         kind: s.kind(),
                         is_undefined: s.is_undefined(),
                         is_weak: s.is_weak(),
+                        size: s.size(),
+                        flags: match s.flags() {
+                            object::SymbolFlags::Elf { st_info, st_other } => {
+                                object::SymbolFlags::Elf { st_info, st_other }
+                            }
+                            _ => object::SymbolFlags::None,
+                        },
                     },
                 ))
             })
             .collect();
+        if obj.format() == BinaryFormat::Pe {
+            symbols = pdb_symbols(&original.with_extension("pdb"))?;
+        }
 
         // Mach-O symbols carry no size, so TLS initializer sizes come from the
         // distance between adjacent symbols in __thread_data.
-        let tls = obj.sections().find(|s| s.name() == Ok("__thread_data"));
+        let tls = obj
+            .sections()
+            .find(|s| matches!(s.name(), Ok("__thread_data" | ".tdata" | ".tls")));
         let tls_init_data = tls
             .as_ref()
             .and_then(|s| s.data().ok())
@@ -89,6 +105,13 @@ impl ModuleCache {
                 ))
             })
             .collect();
+        if obj.format() == BinaryFormat::Pe {
+            tls_syms = symbols
+                .iter()
+                .filter(|(_, symbol)| symbol.kind == SymbolKind::Tls)
+                .map(|(name, symbol)| (symbol.address.saturating_sub(tls_addr), name.clone()))
+                .collect();
+        }
         tls_syms.sort_by_key(|(offset, _)| *offset);
         tls_syms.dedup_by_key(|(offset, _)| *offset);
         let tls_init_sizes = tls_syms
@@ -101,6 +124,12 @@ impl ModuleCache {
             .collect();
 
         Ok(Self {
+            format: if obj.format() == BinaryFormat::Pe {
+                BinaryFormat::Coff
+            } else {
+                obj.format()
+            },
+            architecture: obj.architecture(),
             symbols,
             tls_init_data,
             tls_init_sizes,
@@ -110,7 +139,7 @@ impl ModuleCache {
     /// Static (link-time) address of the anchor symbol.
     pub fn anchor_address(&self) -> Result<u64> {
         self.symbols
-            .get(ANCHOR_SYMBOL)
+            .get(if self.format == BinaryFormat::MachO { "_electron_gpui_hot_anchor" } else { ANCHOR_SYMBOL })
             .filter(|s| !s.is_undefined)
             .map(|s| s.address)
             .with_context(|| format!("{ANCHOR_SYMBOL} not found in the original addon; was it built with the electron-gpui SDK and without stripping?"))
@@ -120,10 +149,16 @@ impl ModuleCache {
 /// Name given to initializer sections disabled by [`disable_initializers`].
 const DISABLED_INITIALIZERS: &[u8; 16] = b"__egpui_no_init\0";
 
-/// Turn the static initializer and terminator sections of a Mach-O object file
-/// into plain data, so the dylib it's linked into doesn't run them when loaded
+/// Turn static initializer and terminator sections into plain data,
+/// so the patch library doesn't run them when loaded
 /// (or unloaded). Returns how many sections were changed.
 pub fn disable_initializers(object: &mut [u8]) -> Result<usize> {
+    match File::parse(&*object)?.format() {
+        BinaryFormat::Elf => return disable_elf_initializers(object),
+        BinaryFormat::Coff => return disable_coff_initializers(object),
+        BinaryFormat::MachO => {}
+        format => bail!("unsupported patch object format {format:?}"),
+    }
     fn read_u32(data: &[u8], at: usize) -> Result<u32> {
         let bytes = data.get(at..at + 4).context("truncated Mach-O object")?;
         Ok(u32::from_le_bytes(bytes.try_into()?))
@@ -182,14 +217,16 @@ pub fn create_stub_object(
         collect_symbols(path.as_ref(), &mut undefined, &mut defined)?;
     }
 
-    let mut obj = object::write::Object::new(BinaryFormat::MachO, arch, Endianness::Little);
-    obj.set_macho_build_version({
-        let mut version = MachOBuildVersion::default();
-        version.platform = PLATFORM_MACOS;
-        version.minos = 11 << 16;
-        version.sdk = 11 << 16;
-        version
-    });
+    let mut obj = object::write::Object::new(cache.format, arch, Endianness::Little);
+    if cache.format == BinaryFormat::MachO {
+        obj.set_macho_build_version({
+            let mut version = MachOBuildVersion::default();
+            version.platform = PLATFORM_MACOS;
+            version.minos = 11 << 16;
+            version.sdk = 11 << 16;
+            version
+        });
+    }
     let text = obj.section_id(StandardSection::Text);
 
     // Subsecond's sentinel: a `ret`, never called.
@@ -199,7 +236,7 @@ pub fn create_stub_object(
     };
     let offset = obj.append_section_data(text, ret, 4);
     obj.add_symbol(Symbol {
-        name: PATCH_SENTINEL.as_bytes()[1..].to_vec(),
+        name: PATCH_SENTINEL.as_bytes().to_vec(),
         value: offset,
         size: ret.len() as u64,
         kind: SymbolKind::Text,
@@ -221,8 +258,23 @@ pub fn create_stub_object(
             continue;
         }
         // The object writer adds Mach-O's leading underscore back.
-        let stub_name = name.as_bytes()[1..].to_vec();
+        let stub_name = if cache.format == BinaryFormat::MachO {
+            &name.as_bytes()[1..]
+        } else {
+            name.as_bytes()
+        }
+        .to_vec();
         let address = sym.address.wrapping_add(slide);
+        // Each DLL owns a TLS index. Reusing the addon's index with patch TLS
+        // offsets would access unrelated thread-local storage.
+        if cache.format == BinaryFormat::Coff
+            && matches!(
+                name.as_str(),
+                "_tls_index" | "_tls_used" | "__tls_index" | "__tls_used"
+            )
+        {
+            continue;
+        }
 
         match sym.kind {
             SymbolKind::Text => {
@@ -253,8 +305,21 @@ pub fn create_stub_object(
                 let (start, size) = cache
                     .tls_init_sizes
                     .get(&format!("{name}$tlv$init"))
+                    .or_else(|| {
+                        if cache.format == BinaryFormat::Coff {
+                            cache.tls_init_sizes.get(name)
+                        } else {
+                            None
+                        }
+                    })
                     .copied()
-                    .unwrap_or((0, cache.tls_init_data.len() as u64));
+                    .unwrap_or_else(|| {
+                        if cache.format == BinaryFormat::Elf {
+                            (sym.address, sym.size.max(1))
+                        } else {
+                            (0, cache.tls_init_data.len() as u64)
+                        }
+                    });
                 let end = (start + size) as usize;
                 let init = if end <= cache.tls_init_data.len() {
                     cache.tls_init_data[start as usize..end].to_vec()
@@ -274,6 +339,11 @@ pub fn create_stub_object(
                 obj.add_symbol_data(id, tls, &init, size.min(8).next_power_of_two());
             }
             kind => {
+                // COFF absolute symbols carry only 32 bits. External data references
+                // have already been bound directly in ADDR64 relocations instead.
+                if cache.format == BinaryFormat::Coff {
+                    continue;
+                }
                 // Statics and other data: an absolute symbol at the original's copy.
                 obj.add_symbol(Symbol {
                     name: stub_name,
@@ -287,7 +357,7 @@ pub fn create_stub_object(
                     scope: SymbolScope::Linkage,
                     weak: sym.is_weak,
                     section: SymbolSection::Absolute,
-                    flags: object::SymbolFlags::None,
+                    flags: sym.flags,
                 });
             }
         }
@@ -310,7 +380,7 @@ fn collect_symbols(
         while let Some(entry) = archive.next_entry() {
             let mut entry = entry?;
             let name = String::from_utf8_lossy(entry.header().identifier()).to_string();
-            if !name.ends_with(".o") {
+            if !name.ends_with(".o") && !name.ends_with(".obj") {
                 continue;
             }
             let mut member = Vec::new();
@@ -343,16 +413,32 @@ fn collect_symbols_from_bytes(
 pub fn create_jump_table(cache: &ModuleCache, patch: &Path, slide: u64) -> Result<JumpTable> {
     let bytes = std::fs::read(patch)?;
     let obj = File::parse(&*bytes)?;
-    let new_symbols = obj.symbol_map();
-
+    let new_symbols: HashMap<String, u64> = if cache.format == BinaryFormat::Coff {
+        pdb_symbols(&patch.with_extension("pdb"))?
+            .into_iter()
+            .map(|(name, symbol)| (name, symbol.address))
+            .collect()
+    } else {
+        obj.symbol_map()
+            .symbols()
+            .iter()
+            .map(|symbol| (symbol.name().to_owned(), symbol.address()))
+            .collect()
+    };
     let mut map = AddressMap::default();
-    let mut new_base_address = None;
-    for symbol in new_symbols.symbols() {
-        if symbol.name() == PATCH_SENTINEL {
-            new_base_address = Some(symbol.address());
-        }
-        if let Some(old) = cache.symbols.get(symbol.name()).filter(|s| !s.is_undefined) {
-            map.insert(old.address.wrapping_add(slide), symbol.address());
+    let sentinel = if cache.format == BinaryFormat::MachO {
+        "_main"
+    } else {
+        PATCH_SENTINEL
+    };
+    let new_base_address = new_symbols.get(sentinel).copied();
+    for (name, address) in &new_symbols {
+        if let Some(old) = cache
+            .symbols
+            .get(name)
+            .filter(|symbol| !symbol.is_undefined && symbol.kind == SymbolKind::Text)
+        {
+            map.insert(old.address.wrapping_add(slide), *address);
         }
     }
     let Some(new_base_address) = new_base_address else {
@@ -368,6 +454,262 @@ pub fn create_jump_table(cache: &ModuleCache, patch: &Path, slide: u64) -> Resul
         new_base_address,
         ifunc_count: 0,
     })
+}
+
+fn pdb_symbols(path: &Path) -> Result<HashMap<String, CachedSymbol>> {
+    use pdb::FallibleIterator;
+    let mut pdb = pdb::PDB::open(
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?,
+    )?;
+    let addresses = pdb.address_map()?;
+    let mut symbols = HashMap::new();
+    fn insert(
+        symbol: pdb::Symbol<'_>,
+        addresses: &pdb::AddressMap<'_>,
+        symbols: &mut HashMap<String, CachedSymbol>,
+    ) {
+        let (name, offset, kind, size) = match symbol.parse() {
+            Ok(pdb::SymbolData::Public(data)) => (
+                data.name.to_string().into_owned(),
+                data.offset,
+                if data.function {
+                    SymbolKind::Text
+                } else {
+                    SymbolKind::Data
+                },
+                0,
+            ),
+            Ok(pdb::SymbolData::Data(data)) => (
+                data.name.to_string().into_owned(),
+                data.offset,
+                SymbolKind::Data,
+                0,
+            ),
+            Ok(pdb::SymbolData::ThreadStorage(data)) => (
+                data.name.to_string().into_owned(),
+                data.offset,
+                SymbolKind::Tls,
+                0,
+            ),
+            _ => return,
+        };
+        if let Some(address) = offset.to_rva(addresses) {
+            symbols.insert(
+                name,
+                CachedSymbol {
+                    address: address.0 as u64,
+                    kind,
+                    size,
+                    is_undefined: false,
+                    is_weak: false,
+                    flags: object::SymbolFlags::None,
+                },
+            );
+        }
+    }
+    let globals = pdb.global_symbols()?;
+    let mut iterator = globals.iter();
+    while let Some(symbol) = iterator.next()? {
+        insert(symbol, &addresses, &mut symbols);
+    }
+    let debug = pdb.debug_information()?;
+    let mut modules = debug.modules()?;
+    while let Some(module) = modules.next()? {
+        if let Some(info) = pdb.module_info(&module)? {
+            let mut iterator = info.symbols()?;
+            while let Some(symbol) = iterator.next()? {
+                insert(symbol, &addresses, &mut symbols);
+            }
+        }
+    }
+    Ok(symbols)
+}
+
+fn u16_at(bytes: &[u8], offset: usize) -> Result<u16> {
+    Ok(u16::from_le_bytes(
+        bytes
+            .get(offset..offset + 2)
+            .context("truncated object")?
+            .try_into()?,
+    ))
+}
+fn u32_at(bytes: &[u8], offset: usize) -> Result<u32> {
+    Ok(u32::from_le_bytes(
+        bytes
+            .get(offset..offset + 4)
+            .context("truncated object")?
+            .try_into()?,
+    ))
+}
+fn u64_at(bytes: &[u8], offset: usize) -> Result<u64> {
+    Ok(u64::from_le_bytes(
+        bytes
+            .get(offset..offset + 8)
+            .context("truncated object")?
+            .try_into()?,
+    ))
+}
+
+fn disable_elf_initializers(bytes: &mut [u8]) -> Result<usize> {
+    if bytes.get(4..6) != Some(&[2, 1]) {
+        bail!("expected 64-bit little-endian ELF");
+    }
+    let headers = u64_at(bytes, 40)? as usize;
+    let stride = u16_at(bytes, 58)? as usize;
+    let count = u16_at(bytes, 60)? as usize;
+    let names_header = headers + u16_at(bytes, 62)? as usize * stride;
+    let names = u64_at(bytes, names_header + 24)? as usize;
+    let mut disabled = 0;
+    for index in 0..count {
+        let header = headers + index * stride;
+        let start = names + u32_at(bytes, header)? as usize;
+        let name = bytes
+            .get(start..)
+            .context("invalid ELF section name")?
+            .split(|byte| *byte == 0)
+            .next()
+            .unwrap_or_default();
+        let replacement: Option<&[u8]> = if name.starts_with(b".init_array") {
+            Some(b".egpui_init")
+        } else if name.starts_with(b".fini_array") {
+            Some(b".egpui_fini")
+        } else if name.starts_with(b".ctors") {
+            Some(b".egini")
+        } else if name.starts_with(b".dtors") {
+            Some(b".egfin")
+        } else {
+            None
+        };
+        if let Some(replacement) = replacement {
+            bytes
+                .get_mut(start..start + replacement.len())
+                .context("truncated ELF section name")?
+                .copy_from_slice(replacement);
+            bytes
+                .get_mut(header + 4..header + 8)
+                .context("truncated ELF section")?
+                .copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+            disabled += 1;
+        }
+    }
+    Ok(disabled)
+}
+
+fn coff_headers(bytes: &[u8]) -> Result<(usize, usize)> {
+    if u16_at(bytes, 0)? != object::pe::IMAGE_FILE_MACHINE_AMD64 {
+        bail!("expected x64 COFF object");
+    }
+    Ok((20 + u16_at(bytes, 16)? as usize, u16_at(bytes, 2)? as usize))
+}
+
+fn disable_coff_initializers(bytes: &mut [u8]) -> Result<usize> {
+    let (headers, count) = coff_headers(bytes)?;
+    let object = File::parse(&*bytes)?;
+    let disabled: Vec<usize> = object
+        .sections()
+        .enumerate()
+        .filter_map(|(index, section)| {
+            let name = section.name().ok()?;
+            // Preserve .CRT$XL* callbacks: a patch DLL still needs its own TLS plumbing.
+            (name.starts_with(".CRT$XC")
+                || name.starts_with(".CRT$XP")
+                || name.starts_with(".CRT$XT"))
+            .then_some(index)
+        })
+        .collect();
+    for index in &disabled {
+        if *index >= count {
+            bail!("invalid COFF section index");
+        }
+        let start = headers + index * 40;
+        bytes
+            .get_mut(start..start + 8)
+            .context("truncated COFF section")?
+            .copy_from_slice(b".egpui00");
+    }
+    Ok(disabled.len())
+}
+
+/// COFF absolute symbols cannot represent another DLL's 64-bit ASLR address.
+/// Bind ADDR64 references in the object itself; the linker must not rebase them.
+/// Large-code-model builds use these references instead of out-of-range REL32s.
+pub fn bind_external_data(
+    cache: &ModuleCache,
+    paths: &[impl AsRef<Path>],
+    slide: u64,
+) -> Result<()> {
+    if cache.format != BinaryFormat::Coff {
+        return Ok(());
+    }
+    let mut undefined = HashSet::new();
+    let mut defined = HashSet::new();
+    for path in paths {
+        collect_symbols(path.as_ref(), &mut undefined, &mut defined)?;
+    }
+    for path in paths {
+        let mut bytes = std::fs::read(path.as_ref())?;
+        let object = File::parse(&*bytes)?;
+        let (headers, count) = coff_headers(&bytes)?;
+        let mut bindings = Vec::new();
+        for index in 0..count {
+            let header = headers + index * 40;
+            let data = u32_at(&bytes, header + 20)? as usize;
+            let relocations = u32_at(&bytes, header + 24)? as usize;
+            let count = u16_at(&bytes, header + 32)? as usize;
+            if count == 0xffff {
+                bail!("COFF relocation overflow requires a full rebuild");
+            }
+            for index in 0..count {
+                let relocation = relocations + index * 10;
+                let kind = u16_at(&bytes, relocation + 8)?;
+                if kind == object::pe::IMAGE_REL_AMD64_ABSOLUTE {
+                    continue;
+                }
+                let symbol =
+                    object.symbol_by_index(object::SymbolIndex(
+                        u32_at(&bytes, relocation + 4)? as usize
+                    ))?;
+                let name = symbol.name()?;
+                if defined.contains(name)
+                    || matches!(
+                        name,
+                        "_tls_index" | "_tls_used" | "__tls_index" | "__tls_used"
+                    )
+                {
+                    continue;
+                }
+                let Some(symbol) = cache.symbols.get(name).filter(|symbol| {
+                    !symbol.is_undefined
+                        && matches!(symbol.kind, SymbolKind::Data | SymbolKind::Unknown)
+                }) else {
+                    continue;
+                };
+                if kind != object::pe::IMAGE_REL_AMD64_ADDR64 {
+                    bail!(
+                        "external data {name} needs an unsupported relocation {kind}; use a large-code-model build"
+                    );
+                }
+                let offset = data + u32_at(&bytes, relocation)? as usize;
+                let address = symbol
+                    .address
+                    .wrapping_add(slide)
+                    .wrapping_add(u64_at(&bytes, offset)?);
+                bindings.push((relocation, offset, address));
+            }
+        }
+        for (relocation, offset, address) in bindings {
+            bytes
+                .get_mut(offset..offset + 8)
+                .context("truncated COFF data relocation")?
+                .copy_from_slice(&address.to_le_bytes());
+            bytes
+                .get_mut(relocation + 8..relocation + 10)
+                .context("truncated COFF relocation")?
+                .fill(0);
+        }
+        std::fs::write(path.as_ref(), bytes)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -439,5 +781,118 @@ mod tests {
     fn rejects_other_files() {
         assert!(disable_initializers(&mut [0u8; 8]).is_err());
         assert!(disable_initializers(&mut []).is_err());
+    }
+
+    #[test]
+    fn elf_initializers_are_disabled_but_tls_is_preserved() {
+        let mut object =
+            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        for name in [".init_array", ".fini_array.100", ".ctors", ".tdata"] {
+            let section =
+                object.add_section(Vec::new(), name.as_bytes().to_vec(), SectionKind::Data);
+            object.append_section_data(section, &[0; 8], 8);
+        }
+        let mut bytes = object.write().unwrap();
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 3);
+        let sections: Vec<_> = File::parse(&*bytes)
+            .unwrap()
+            .sections()
+            .map(|section| section.name().unwrap().to_owned())
+            .collect();
+        assert!(sections.contains(&".egpui_init".into()));
+        assert!(sections.contains(&".egpui_fini.100".into()));
+        assert!(sections.contains(&".egini".into()));
+        assert!(sections.contains(&".tdata".into()));
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 0);
+    }
+
+    #[test]
+    fn coff_initializers_are_disabled_but_tls_callbacks_are_preserved() {
+        let mut object =
+            WriteObject::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
+        for name in [".CRT$XCU", ".CRT$XPU", ".CRT$XTU", ".CRT$XLB"] {
+            let section =
+                object.add_section(Vec::new(), name.as_bytes().to_vec(), SectionKind::Data);
+            object.append_section_data(section, &[0; 8], 8);
+        }
+        let mut bytes = object.write().unwrap();
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 3);
+        let sections: Vec<_> = File::parse(&*bytes)
+            .unwrap()
+            .sections()
+            .map(|section| section.name().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            sections.iter().filter(|name| *name == ".egpui00").count(),
+            3
+        );
+        assert!(sections.contains(&".CRT$XLB".into()));
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 0);
+    }
+
+    #[test]
+    fn coff_data_references_keep_the_full_aslr_address() {
+        let mut object =
+            WriteObject::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
+        let data = object.section_id(StandardSection::Data);
+        object.append_section_data(data, &[0; 8], 8);
+        let symbol = object.add_symbol(Symbol {
+            name: b"old_static".to_vec(),
+            value: 0,
+            size: 0,
+            kind: SymbolKind::Data,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Undefined,
+            flags: object::SymbolFlags::None,
+        });
+        object
+            .add_relocation(
+                data,
+                write::Relocation {
+                    offset: 0,
+                    symbol,
+                    addend: 17,
+                    flags: object::RelocationFlags::Coff {
+                        typ: object::pe::IMAGE_REL_AMD64_ADDR64,
+                    },
+                },
+            )
+            .unwrap();
+        let path = std::env::temp_dir().join(format!("egpui-coff-{}.obj", std::process::id()));
+        std::fs::write(&path, object.write().unwrap()).unwrap();
+        let cache = ModuleCache {
+            format: BinaryFormat::Coff,
+            architecture: Architecture::X86_64,
+            symbols: HashMap::from([(
+                "old_static".into(),
+                CachedSymbol {
+                    address: 0x1234,
+                    size: 0,
+                    kind: SymbolKind::Data,
+                    is_undefined: false,
+                    is_weak: false,
+                    flags: object::SymbolFlags::None,
+                },
+            )]),
+            tls_init_data: Vec::new(),
+            tls_init_sizes: HashMap::new(),
+        };
+        let result = bind_external_data(&cache, &[&path], 0x7ff0_0000_0000);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        result.unwrap();
+        let parsed = File::parse(&*bytes).unwrap();
+        let section = parsed.section_by_name(".data").unwrap();
+        assert_eq!(
+            u64_at(section.data().unwrap(), 0).unwrap(),
+            0x7ff0_0000_1245
+        );
+        assert!(
+            section
+                .relocations()
+                .all(|(_, relocation)| relocation.flags()
+                    == object::RelocationFlags::Coff { typ: 0 })
+        );
     }
 }

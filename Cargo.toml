@@ -11,15 +11,17 @@ publish = false
 
 [workspace.dependencies]
 electron-gpui = { path = "crates/electron-gpui" }
-# GPUI from Zed plus our embedded-mode patch (MacPlatform::new_embedded), on the
+# GPUI from Zed plus our embedded-platform patches, on the
 # electron-gpui-embedded branch of https://github.com/biw/zed. See CONTRIBUTING.md.
-gpui = { git = "https://github.com/biw/zed", rev = "d54df6c2796725e4adb2d6de5150869a0e8f50d8", default-features = false, features = [
+gpui = { git = "https://github.com/biw/zed", rev = "84ea20d8f44a5b47eb7a9698e359f0280f94fb64", default-features = false, features = [
   "font-kit",
 ] }
-gpui_macos = { git = "https://github.com/biw/zed", rev = "d54df6c2796725e4adb2d6de5150869a0e8f50d8", features = [
+gpui_macos = { git = "https://github.com/biw/zed", rev = "84ea20d8f44a5b47eb7a9698e359f0280f94fb64", features = [
   "font-kit",
 ] }
-napi = { version = "3", default-features = false, features = ["napi6"] }
+gpui_windows = { git = "https://github.com/biw/zed", rev = "84ea20d8f44a5b47eb7a9698e359f0280f94fb64", default-features = false }
+gpui_linux = { git = "https://github.com/biw/zed", rev = "84ea20d8f44a5b47eb7a9698e359f0280f94fb64", features = ["x11", "wayland"] }
+napi = { version = "3", default-features = false, features = ["napi6", "dyn-symbols"] }
 napi-derive = "3"
 napi-build = "2"
 serde = { version = "1", features = ["derive"] }

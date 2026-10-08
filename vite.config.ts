@@ -4,11 +4,11 @@ export default defineConfig({
   fmt: {
     printWidth: 110,
     sortPackageJson: false,
-    ignorePatterns: ["target/**", "**/dist/**", "pnpm-lock.yaml"],
+    ignorePatterns: [".context/**", "target/**", "**/dist/**", "pnpm-lock.yaml"],
   },
   lint: {
     env: { node: true },
-    ignorePatterns: ["target/**", "**/dist/**"],
+    ignorePatterns: [".context/**", "target/**", "**/dist/**"],
     options: {
       denyWarnings: true,
       typeAware: true,

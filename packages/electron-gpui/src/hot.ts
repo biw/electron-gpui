@@ -106,6 +106,7 @@ export function startHotClient(addon: HotAddon, config: HotConfig, onApplied?: (
   const stop = (): void => {
     clearInterval(poll);
     watcher.close();
+    process.removeListener("exit", stop);
     try {
       const current = JSON.parse(readFileSync(appFile, "utf8")) as { pid?: number };
       if (current.pid === process.pid) rmSync(appFile, { force: true });

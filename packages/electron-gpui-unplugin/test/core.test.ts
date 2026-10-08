@@ -4,6 +4,7 @@ import {
   ADDON_PATH_PLACEHOLDER,
   addonModuleCode,
   assetFileName,
+  developmentAsset,
   ensureBuild,
   invalidateBuild,
   isCrateInput,
@@ -28,6 +29,12 @@ describe("resolveOptions", () => {
 });
 
 describe("assetFileName", () => {
+  it("gives changed development addons separate paths and keeps identical content stable", () => {
+    const first = developmentAsset("native/addon.node", new Uint8Array([1]));
+    expect(first).toMatch(/^native\/addon\.[a-f0-9]{16}\.node$/);
+    expect(developmentAsset("native/addon.node", new Uint8Array([1]))).toBe(first);
+    expect(developmentAsset("native/addon.node", new Uint8Array([2]))).not.toBe(first);
+  });
   it("joins a relative asset directory", () => {
     expect(assetFileName("a.node", "main")).toBe("main/a.node");
     expect(assetFileName("a.node", "main\\sub")).toBe("main/sub/a.node");
@@ -103,7 +110,7 @@ describe("localDependencies", () => {
   const pkg = (id: string, manifest: string, source: string | null = null) => ({
     id,
     name: id,
-    manifest_path: manifest,
+    manifest_path: path.resolve(manifest),
     source,
   });
   const metadata = {
@@ -129,8 +136,8 @@ describe("localDependencies", () => {
 
   it("returns local crates reachable from the views crate, skipping vendored and registry crates", () => {
     expect(localDependencies(metadata, path.resolve("/app/native/Cargo.toml"))).toEqual([
-      "/app/icons",
-      "/app/theme",
+      path.resolve("/app/icons"),
+      path.resolve("/app/theme"),
     ]);
   });
 });

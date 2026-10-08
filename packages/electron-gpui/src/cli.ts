@@ -16,6 +16,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { nativeArtifact } from "./platform.js";
+
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE_DIR = join(PACKAGE_ROOT, "templates", "native");
 const VERSION = (JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as { version: string })
@@ -144,7 +146,10 @@ function build(args: string[]): void {
       out: { type: "string" },
     },
   });
-  if (process.platform !== "darwin") fail("electron-gpui currently supports macOS only");
+  if (!["darwin", "win32", "linux"].includes(process.platform))
+    fail(`unsupported platform ${process.platform}`);
+  if (values.universal && process.platform !== "darwin") fail("--universal is supported only on macOS");
+  if (values.universal) run("rustup", ["target", "add", ...Object.values(MAC_TARGETS)]);
 
   const dir = resolve(positionals[0] ?? "native");
   const manifest = join(dir, "Cargo.toml");
@@ -160,22 +165,27 @@ function build(args: string[]): void {
   const lib = pkg?.targets.find((t) => t.kind.includes("cdylib"));
   if (!pkg || !lib) fail(`${manifest} must define a [lib] with crate-type = ["cdylib"]`);
 
-  const profile = values.release ? "release" : "debug";
-  const dylib = `lib${lib.name.replace(/-/g, "_")}.dylib`;
   // A host-only build skips --target so it shares target/<profile> with
   // `cargo build`, `cargo test` and clippy instead of duplicating every artifact.
   const targets: (string | undefined)[] = values.universal ? Object.values(MAC_TARGETS) : [undefined];
 
   const built = targets.map((target) => {
-    run("cargo", [
-      "build",
-      "--manifest-path",
-      manifest,
-      "--lib",
-      ...(target ? ["--target", target] : []),
-      ...(values.release ? ["--release"] : []),
-    ]);
-    return join(metadata.target_directory, ...(target ? [target] : []), profile, dylib);
+    const result = spawnSync(
+      "cargo",
+      [
+        "build",
+        "--message-format=json-render-diagnostics",
+        "--manifest-path",
+        manifest,
+        "--lib",
+        ...(target ? ["--target", target] : []),
+        ...(values.release ? ["--release"] : []),
+      ],
+      { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
+    );
+    if (result.error) fail(`failed to run cargo: ${result.error.message}`);
+    if (result.status !== 0) process.exit(result.status ?? 1);
+    return nativeArtifact(result.stdout, lib.name);
   });
 
   const out = resolve(values.out ?? join(dir, "index.node"));

@@ -13,11 +13,11 @@ scripts/                           Cargo cleanup, Electron install fix, consiste
 
 ## Setup
 
-You need macOS, [rustup](https://rustup.rs), Node 22+ and pnpm (the version in `package.json`'s `packageManager`; `corepack enable` picks it up).
+You need macOS (ARM64 or Intel), Windows x64 with MSVC Build Tools and the Windows SDK, or Linux x64 with GNU/glibc. Install [rustup](https://rustup.rs), Node 22+ and pnpm (the version in `package.json`'s `packageManager`; `corepack enable` picks it up). Linux build dependencies are listed in [.github/actions/setup/action.yml](.github/actions/setup/action.yml).
 
 ```sh
 pnpm install
-pnpm dev          # fetch + patch Zed, build everything, run the counter example
+pnpm dev          # fetch the pinned GPUI fork, build everything, run the counter example
 ```
 
 Recommended tools:
@@ -45,21 +45,26 @@ GPUI is big, so `target/` grows quickly. Every addon build (`electron-gpui build
 
 ## GPUI and the Zed fork
 
-GPUI comes from [`biw/zed`](https://github.com/biw/zed), branch `electron-gpui-embedded`: a Zed commit plus two changes:
+GPUI comes from [`biw/zed`](https://github.com/biw/zed), branch `electron-gpui-embedded-cross-platform`, based on the previous embedded macOS revision:
 
 - `MacPlatform::new_embedded()`, so GPUI runs inside Electron's `NSApp` instead of owning it.
 - Blurred window backgrounds that work on macOS 27 (submitted upstream as [zed-industries/zed#65361](https://github.com/zed-industries/zed/pull/65361); drop it once Zed has it).
+- Embedded Windows initialization, a GPUI-only message hook, no process-wide quit messages, and WARP fallback.
+- Embedded Linux initialization and nonblocking X11/Wayland event dispatch.
+- Portable always-on-top support for Windows and X11, with a default no-op on unsupported backends.
 
 `Cargo.toml` pins it by `rev`.
 
 To move to a newer Zed:
 
-1. In a clone of `biw/zed`, rebase `electron-gpui-embedded` onto the Zed commit you want, fix any conflicts, and push it.
-2. Update both `rev`s in `Cargo.toml` (`[workspace.dependencies]`) to the new branch head, and run `cargo update -p gpui`.
+1. In a clone of `biw/zed`, put the embedded changes onto the Zed commit you want, fix any conflicts, and publish a new branch while preserving old revisions.
+2. Update all four GPUI `rev`s in `Cargo.toml` (`[workspace.dependencies]`) together, and run `cargo update -p gpui`.
 3. Match the Rust toolchain to the fork's `rust-toolchain.toml` in `rust-toolchain.toml` and `packages/electron-gpui/templates/native/rust-toolchain.toml` (`node scripts/check-consistency.mjs` checks the two of ours agree).
 4. `pnpm lint && pnpm test && pnpm smoke && pnpm smoke:hot`.
 
 Old revisions must stay reachable on the fork (apps pin SDK tags that reference them), so rebase onto a new branch name or keep old heads tagged rather than force-pushing over them.
+
+CI checks `macos-15` (ARM64), `macos-15-intel`, `windows-2025`, and `ubuntu-24.04`. Electron 30 and latest run native window smoke tests; latest also runs state-preserving repeated hot patches, initializer suppression, compile-error recovery and structural/dependency restarts. Linux runs both Xvfb/Openbox and headless Weston with software graphics. To run the Linux harness locally: `pnpm exec node scripts/ci-smoke.mjs x11 smoke` (or `wayland`, and `smoke:hot`). PR, manual and reusable CI all use the complete matrix, and release publishing waits for it.
 
 ## Releasing
 

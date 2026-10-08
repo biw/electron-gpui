@@ -18,6 +18,7 @@
 //! builds (see `main`). Approach adapted from the Dioxus CLI (MIT OR Apache-2.0; used under MIT).
 
 mod patch;
+mod platform;
 
 use std::{
     collections::HashMap,
@@ -116,9 +117,9 @@ fn linker(mode: &str, args: &[String]) -> Result<ExitCode> {
         std::fs::write(path, serde_json::to_vec_pretty(&expanded)?)?;
     }
     match mode {
-        "passthrough" => Ok(exit_code(Command::new("cc").args(args).status()?)),
+        "passthrough" => Ok(exit_code(platform::linker()?.args(args).status()?)),
         "record" => {
-            if let Some(out) = expanded.windows(2).find(|w| w[0] == "-o").map(|w| &w[1]) {
+            if let Some(out) = platform::link_output(&expanded) {
                 std::fs::write(out, [])?;
             }
             Ok(ExitCode::SUCCESS)
@@ -129,14 +130,7 @@ fn linker(mode: &str, args: &[String]) -> Result<ExitCode> {
 
 /// rustc passes long argument lists as `@file`, one argument per line.
 fn expand_response_files(args: &[String]) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for arg in args {
-        match arg.strip_prefix('@') {
-            Some(file) => out.extend(std::fs::read_to_string(file)?.lines().map(str::to_owned)),
-            None => out.push(arg.clone()),
-        }
-    }
-    Ok(out)
+    platform::expand_response_files(args)
 }
 
 struct CrateInfo {
@@ -215,19 +209,31 @@ fn fat(crate_dir: &Path, out: &Path) -> Result<ExitCode> {
         }
     }
 
-    let status = Command::new("cargo")
-        .args(["rustc", "--lib", "--manifest-path"])
+    let output = Command::new("cargo")
+        .args([
+            "rustc",
+            "--message-format=json-render-diagnostics",
+            "--lib",
+            "--manifest-path",
+        ])
         .arg(crate_dir.join("Cargo.toml"))
-        .args(["--", "-Csave-temps=true", "-Clink-dead-code"])
+        .args([
+            "--",
+            "-Csave-temps=true",
+            "-Clink-dead-code",
+            "-Cstrip=none",
+        ])
+        .args(platform::fat_flags())
         .arg(format!("-Clinker={}", me.display()))
         .env("RUSTC_WORKSPACE_WRAPPER", &me)
         .env(CAPTURE_DIR, &state)
         .env(TIP_CRATE, &info.lib_name)
         .env(LINK_MODE, "passthrough")
         .env(LINK_ARGS, state.join("fat-link-args.json"))
-        .status()?;
-    if !status.success() {
-        return Ok(exit_code(status));
+        .output()?;
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Ok(exit_code(output.status));
     }
     if !state.join("rustc.json").exists() {
         bail!(
@@ -236,12 +242,11 @@ fn fat(crate_dir: &Path, out: &Path) -> Result<ExitCode> {
         );
     }
 
-    let built = info
-        .target_dir
-        .join("debug")
-        .join(format!("lib{}.dylib", info.lib_name));
+    let built = platform::cargo_artifact(&output.stdout, &info.lib_name)?;
     // Keep the exact binary patches are built against, then publish it.
     std::fs::copy(&built, state.join("original.node"))?;
+    #[cfg(target_os = "windows")]
+    std::fs::copy(built.with_extension("pdb"), state.join("original.pdb"))?;
     let staging = out.with_extension(format!("node.{}.tmp", std::process::id()));
     std::fs::copy(&built, &staging)?;
     std::fs::rename(&staging, out)?;
@@ -298,7 +303,7 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
         serde_json::from_slice(&std::fs::read(thin.join("link-args.json"))?)?;
     let mut objects: Vec<PathBuf> = link_args
         .iter()
-        .filter(|a| a.ends_with(".rcgu.o"))
+        .filter(|a| a.ends_with(".rcgu.o") || a.ends_with(".rcgu.obj"))
         .map(PathBuf::from)
         .collect();
     objects.sort();
@@ -326,11 +331,10 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
         }
     }
 
-    let arch = if cfg!(target_arch = "aarch64") {
-        object::Architecture::Aarch64
-    } else {
-        object::Architecture::X86_64
-    };
+    if let Err(error) = patch::bind_external_data(&cache, &objects, slide) {
+        return not_patchable(&format!("binding global data failed: {error:#}"));
+    }
+    let arch = cache.architecture;
     let stub = thin.join("stub.o");
     let stub_object = match patch::create_stub_object(&cache, &objects, arch, slide) {
         Ok(stub) => stub,
@@ -340,13 +344,12 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
 
     // Link only the crate's code plus the stub; everything else resolves to the
     // running addon (through the stub) or to system libraries.
-    let dylib = thin.join(format!("lib{}-patch.dylib", info.lib_name));
-    let status = Command::new("cc")
+    let dylib = thin.join(platform::library_name(&format!("{}-patch", info.lib_name)));
+    let status = platform::linker()?
         .args(&objects)
         .arg(&stub)
         .args(kept_link_flags(&fat_link_args))
-        .args(["-dynamiclib", "-Wl,-undefined,dynamic_lookup", "-o"])
-        .arg(&dylib)
+        .args(platform::patch_flags(&dylib))
         .current_dir(&invocation.cwd)
         .status()?;
     if !status.success() {
@@ -396,24 +399,7 @@ fn not_patchable(reason: &str) -> Result<ExitCode> {
 /// Platform and system-library flags from the original link, minus its inputs,
 /// output and export list.
 fn kept_link_flags(args: &[String]) -> Vec<String> {
-    let mut kept = Vec::new();
-    let mut iter = args.iter().peekable();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-arch" | "-framework" | "-target" | "-L" => {
-                kept.push(arg.clone());
-                if let Some(value) = iter.next() {
-                    kept.push(value.clone());
-                }
-            }
-            "-nodefaultlibs" => kept.push(arg.clone()),
-            a if a.starts_with("-l") || a.starts_with("-L") || a.starts_with("-m") => {
-                kept.push(arg.clone())
-            }
-            _ => {}
-        }
-    }
-    kept
+    platform::kept_link_flags(args)
 }
 
 /// Patch dylibs stay loaded in the running app, so only prune old ones; keep the

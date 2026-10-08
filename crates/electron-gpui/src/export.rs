@@ -46,6 +46,11 @@ macro_rules! export {
                 $crate::__private::init(registry)
             }
 
+            #[napi]
+            pub fn poll_events() -> napi::Result<()> {
+                $crate::__private::poll_events()
+            }
+
             #[napi(ts_args_type = "callback: (eventJson: string) => void")]
             pub fn on_event(callback: napi::bindgen_prelude::Function<String, ()>) -> napi::Result<()> {
                 $crate::__private::set_event_callback(callback)

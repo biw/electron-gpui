@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -264,16 +265,41 @@ export const ADDON_PATH_PLACEHOLDER = "__ELECTRON_GPUI_ADDON_PATH__";
  * relative to the bundle file, so no bundler tries to resolve a native require,
  * and it works from both ES module and CommonJS output.
  */
-export function addonModuleCode(relativePath: string, hotDir?: string): string {
+export function addonModuleCode(relativePath: string, hotDir?: string, development = false): string {
   // In hot-reload dev builds, tell electron-gpui's runtime where to exchange patches.
   const hot = hotDir
     ? `Object.defineProperty(addonModule.exports, "__electronGpuiHot", { value: { dir: ${JSON.stringify(hotDir)} } });\n`
     : "";
+  const copy = development
+    ? `
+if (process.platform === "win32") {
+  const root = join(tmpdir(), "electron-gpui-addons");
+  mkdirSync(root, { recursive: true });
+  for (const name of readdirSync(root)) {
+    if (!/^\\d+$/.test(name) || Number(name) === process.pid) continue;
+    try { process.kill(Number(name), 0); }
+    catch (error) {
+      if (error.code === "ESRCH") {
+        try { rmSync(join(root, name), { recursive: true, force: true }); } catch {}
+      }
+    }
+  }
+  const directory = join(root, String(process.pid));
+  mkdirSync(directory, { recursive: true });
+  const hash = createHash("sha256").update(readFileSync(addonPath)).digest("hex");
+  const copy = join(directory, hash + ".node");
+  if (!existsSync(copy)) copyFileSync(addonPath, copy);
+  addonPath = copy;
+}
+`
+    : "";
   return `import { dirname, join } from "node:path";
+${development ? 'import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { createHash } from "node:crypto";\n' : ""}
 import { fileURLToPath } from "node:url";
 const bundleDir = typeof __dirname === "string" ? __dirname : dirname(fileURLToPath(import.meta.url));
 const addonModule = { exports: {} };
-process.dlopen(addonModule, join(bundleDir, ${JSON.stringify(relativePath)}));
+let addonPath = join(bundleDir, ${JSON.stringify(relativePath)});
+${copy}process.dlopen(addonModule, addonPath);
 ${hot}export default addonModule.exports;
 `;
 }
@@ -288,4 +314,10 @@ export function resolveAddonPath(
   if (!code.includes(quoted)) return undefined;
   const relative = path.posix.relative(path.posix.dirname(chunkFileName), assetFileName);
   return code.replaceAll(quoted, JSON.stringify(relative));
+}
+
+/** Content-addressed assets prevent replacement of a loaded development addon. */
+export function developmentAsset(fileName: string, bytes: Uint8Array): string {
+  const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+  return fileName.replace(/\.node$/, `.${hash}.node`);
 }

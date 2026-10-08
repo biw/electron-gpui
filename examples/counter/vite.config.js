@@ -5,7 +5,11 @@ import { defineConfig } from "vite-plus";
 // views in ./native first and emits the addon next to dist/main.js. With
 // `vp build --watch` it also runs the app and restarts it after changes.
 export default defineConfig({
-  plugins: [electronGpui({ electron: true })],
+  plugins: [
+    electronGpui({
+      electron: { args: process.env.ELECTRON_GPUI_ELECTRON_ARGS?.split(" ").filter(Boolean) ?? [] },
+    }),
+  ],
   build: {
     ssr: "src/main.js",
     outDir: "dist",

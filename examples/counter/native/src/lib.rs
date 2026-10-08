@@ -29,9 +29,14 @@ struct Counter {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Incoming {
     /// Show a message from JS.
-    SetMessage { text: String },
+    SetMessage {
+        text: String,
+    },
     /// Reply with `pong`; used by the smoke test.
     Ping,
+    Add {
+        delta: i64,
+    },
     /// Panic; the smoke test checks this surfaces as a JS error and the window
     /// keeps working.
     Panic,
@@ -67,9 +72,10 @@ impl RootView for Counter {
             }
             Some(Incoming::Ping) => {
                 self.bridge
-                    .emit(json!({ "type": "pong", "theme": counter_theme::NAME }))
+                    .emit(json!({ "type": "pong", "theme": counter_theme::NAME, "count": self.count }))
                     .ok();
             }
+            Some(Incoming::Add { delta }) => self.change(delta, cx),
             Some(Incoming::Panic) => panic!("requested by the smoke test"),
             None => {}
         }
@@ -105,6 +111,9 @@ fn button(id: &'static str, label: &'static str) -> Stateful<Div> {
 
 impl Render for Counter {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.bridge
+            .emit(json!({ "type": "frame", "count": self.count }))
+            .ok();
         div()
             .track_focus(&self.focus_handle)
             .key_context("Counter")
@@ -148,3 +157,30 @@ impl Render for Counter {
 electron_gpui::export! {
     "Counter" => Counter,
 }
+
+// This fixture records actual loader executions, independently of patch-local statics.
+#[cfg(debug_assertions)]
+extern "C" fn smoke_initializer() {
+    if let Some(status) = std::env::var_os("ELECTRON_GPUI_SMOKE_STATUS") {
+        use std::io::Write;
+        let path = format!(
+            "{}.init-{}",
+            std::path::Path::new(&status).display(),
+            std::process::id()
+        );
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+        {
+            file.write_all(b"I").expect("recording smoke initializer");
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[used]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__mod_init_func"))]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_os = "windows", unsafe(link_section = ".CRT$XCU"))]
+static SMOKE_INITIALIZER: extern "C" fn() = smoke_initializer;

@@ -70,6 +70,8 @@ With hot reload, the plugin restarts the app by touching `**/electron-gpui-hot/*
 
 The plugin runs the `electron-gpui` CLI installed in your project directly, never through `npx`. It's meant for Node outputs such as Electron's main process, not browser bundles; Vite SSR asset emission is turned on automatically.
 
+Native builds and in-process hot patches support macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). `universal` is macOS-only. Development addons use content-addressed filenames and process-owned Windows copies so rebuilding cannot overwrite a loaded DLL. See the [platform prerequisites and window-option limitations](https://github.com/biw/electron-gpui#api).
+
 ## License
 
 MIT

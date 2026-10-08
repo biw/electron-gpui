@@ -1,7 +1,5 @@
 name: CI
 
-# macOS minutes are billed at 10x on private repos, so CI runs on pull requests,
-# on demand, and from release.yml before publishing (workflow_call).
 on:
   pull_request:
   workflow_dispatch:
@@ -18,23 +16,26 @@ env:
 
 jobs:
   check:
-    name: Lint, test, licenses
-    runs-on: macos-15
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, windows-2025, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - run: node scripts/check-consistency.mjs
       - run: pnpm lint
-      - run: pnpm build
       - run: pnpm test
-      - name: x64 build check
-        run: cargo check --workspace --target x86_64-apple-darwin
+      - name: Native release build
+        run: cargo build --workspace --release --locked
+      - name: Scaffold and build a standalone views crate
+        run: node scripts/scaffold-smoke.mjs
 
   licenses:
     name: Dependency licenses
-    # cargo-deny-action is a container action, which GitHub runs only on Linux.
-    # deny.toml targets macOS, so the result is the same.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -42,19 +43,32 @@ jobs:
           command: check licenses sources
 
   smoke:
-    name: Smoke test (Electron ${{ matrix.electron }})
-    runs-on: macos-15
+    name: Smoke (${{ matrix.platform.os }}, ${{ matrix.platform.display }}, Electron ${{ matrix.electron }})
+    runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (package.json peerDependencies) and newest.
         electron: ["30", "latest"]
+        platform:
+          - { os: macos-15, display: native }
+          - { os: macos-15-intel, display: native }
+          - { os: windows-2025, display: native }
+          - { os: ubuntu-24.04, display: x11 }
+          - { os: ubuntu-24.04, display: wayland }
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - name: Use Electron ${{ matrix.electron }}
         run: pnpm --filter counter-example add --save-dev electron@${{ matrix.electron }}
-      - run: pnpm smoke
+      - run: pnpm build
+      - name: Native window smoke test
+        run: pnpm exec node scripts/ci-smoke.mjs ${{ matrix.platform.display }} smoke
       - name: Hot reload smoke test
         if: matrix.electron == 'latest'
-        run: pnpm --filter counter-example smoke:hot
+        run: pnpm exec node scripts/ci-smoke.mjs ${{ matrix.platform.display }} smoke:hot
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.platform.os }}-${{ matrix.platform.display }}-${{ matrix.electron }}
+          path: .context/*.log
