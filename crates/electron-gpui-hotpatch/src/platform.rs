@@ -183,7 +183,7 @@ pub fn kept_link_flags(args: &[String]) -> Vec<String> {
             arg if cfg!(target_os = "windows")
                 && (arg.to_ascii_uppercase().starts_with("/LIBPATH:")
                     || arg.to_ascii_uppercase().starts_with("/DEFAULTLIB:")
-                    || arg.to_ascii_lowercase().ends_with(".lib")) =>
+                    || (!arg.starts_with('/') && arg.to_ascii_lowercase().ends_with(".lib"))) =>
             {
                 kept.push(arg.into())
             }
@@ -311,5 +311,13 @@ mod tests {
             link_output(&["-o".into(), "addon.so".into()]),
             Some("addon.so")
         );
+    }
+
+    #[test]
+    fn never_reuses_the_original_import_library_output() {
+        let args = ["/IMPLIB:C:\\target\\original.dll.lib".into(), "kernel32.lib".into()];
+        let kept = kept_link_flags(&args);
+        assert!(!kept.iter().any(|arg| arg.starts_with("/IMPLIB:")));
+        if cfg!(target_os = "windows") { assert_eq!(kept, ["kernel32.lib"]); }
     }
 }

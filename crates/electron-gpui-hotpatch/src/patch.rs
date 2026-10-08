@@ -257,6 +257,24 @@ pub fn create_stub_object(
     });
 
     for name in undefined.difference(&defined) {
+        if cache.format == BinaryFormat::Coff
+            && let Some(imported) = name.strip_prefix("__imp_")
+        {
+            // MSVC emits indirection through DLL-import slots for cross-crate
+            // statics (and sometimes functions), even when the original linked
+            // them statically. Provide a pointer to the original definition.
+            if let Some(symbol) = cache.symbols.get(imported).filter(|symbol| !symbol.is_undefined) {
+                let data = obj.section_id(StandardSection::Data);
+                let offset = obj.append_section_data(data, &symbol.address.wrapping_add(slide).to_le_bytes(), 8);
+                obj.add_symbol(Symbol {
+                    name: name.as_bytes().to_vec(), value: offset, size: 8,
+                    kind: SymbolKind::Data, scope: SymbolScope::Linkage, weak: false,
+                    section: SymbolSection::Section(data), flags: object::SymbolFlags::None,
+                });
+            }
+            // System-library imports resolve through the original link libraries.
+            continue;
+        }
         let Some(sym) = cache.symbols.get(name) else {
             // Not in the original either (e.g. a libSystem import or a brand-new
             // generic instantiation from a dependency); left to the linker.
@@ -695,7 +713,7 @@ pub fn bind_external_data(
                         u32_at(&bytes, relocation + 4)? as usize
                     ))?;
                 let name = symbol.name()?;
-                if defined.contains(name)
+                if name.starts_with("__imp_") || defined.contains(name)
                     || matches!(
                         name,
                         "_tls_index" | "_tls_used" | "__tls_index" | "__tls_used"
@@ -914,6 +932,34 @@ mod tests {
         assert!(symbol.is_global());
         assert_eq!(symbol.address(), 0x7ff0_0000_1234);
         assert!(parsed.symbol_by_name("main").unwrap().is_global());
+    }
+
+    #[test]
+    fn coff_import_slots_point_to_the_original_definition() {
+        let mut object = WriteObject::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
+        object.add_symbol(Symbol {
+            name: b"__imp_old_global".to_vec(), value: 0, size: 0,
+            kind: SymbolKind::Data, scope: SymbolScope::Linkage, weak: false,
+            section: SymbolSection::Undefined, flags: object::SymbolFlags::None,
+        });
+        let path = std::env::temp_dir().join(format!("egpui-import-{}.obj", std::process::id()));
+        std::fs::write(&path, object.write().unwrap()).unwrap();
+        let cache = ModuleCache {
+            format: BinaryFormat::Coff, architecture: Architecture::X86_64,
+            symbols: HashMap::from([("old_global".into(), CachedSymbol {
+                address: 0x1234, size: 8, kind: SymbolKind::Data,
+                is_undefined: false, is_weak: false, flags: object::SymbolFlags::None,
+            })]),
+            tls_init_data: Vec::new(), tls_init_sizes: HashMap::new(),
+        };
+        let bytes = create_stub_object(&cache, &[&path], Architecture::X86_64, 0x7ff0_0000_0000);
+        std::fs::remove_file(path).unwrap();
+        let bytes = bytes.unwrap();
+        let parsed = File::parse(&*bytes).unwrap();
+        let symbol = parsed.symbol_by_name("__imp_old_global").unwrap();
+        let section = parsed.section_by_index(symbol.section_index().unwrap()).unwrap();
+        assert_eq!(u64_at(section.data().unwrap(), symbol.address() as usize).unwrap(), 0x7ff0_0000_1234);
+        assert!(symbol.is_global());
     }
 
     #[test]
