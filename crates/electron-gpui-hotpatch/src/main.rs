@@ -280,6 +280,7 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
     // rustc strips debug info from its output by default in dev; the output here
     // is an empty placeholder, so don't.
     rustc_args.push("-Cstrip=none".into());
+    rustc_args.extend(platform::thin_flags().into_iter().map(String::from));
     let status = Command::new(&invocation.args[0])
         .args(&rustc_args)
         .current_dir(&invocation.cwd)

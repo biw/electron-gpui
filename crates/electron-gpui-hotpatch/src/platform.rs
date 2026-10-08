@@ -75,6 +75,17 @@ pub fn fat_flags() -> Vec<&'static str> {
     flags
 }
 
+pub fn thin_flags() -> Vec<&'static str> {
+    // GNU ld rejects large-model GOT references to absolute symbols in another
+    // loaded module. Direct 64-bit relocations can bind those addresses instead;
+    // patch_flags permits the loader to relocate the patch's own text.
+    if cfg!(target_os = "linux") {
+        vec!["-Crelocation-model=static"]
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn link_output(args: &[String]) -> Option<&str> {
     args.windows(2)
         .find(|pair| pair[0] == "-o")

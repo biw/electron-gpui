@@ -257,6 +257,10 @@ pub fn create_stub_object(
     });
 
     for name in undefined.difference(&defined) {
+        // Each ELF image needs the GOT synthesized by its own linker.
+        if cache.format == BinaryFormat::Elf && name == "_GLOBAL_OFFSET_TABLE_" {
+            continue;
+        }
         if cache.format == BinaryFormat::Coff
             && let Some(imported) = name.strip_prefix("__imp_")
         {
