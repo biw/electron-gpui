@@ -1,6 +1,6 @@
 {
   "name": "electron-gpui-unplugin",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Vite/Rollup/Rolldown/webpack/esbuild plugin that builds and bundles your electron-gpui addon",
   "keywords": [
     "electron",
@@ -107,7 +107,7 @@
     "prepack": "cp ../../LICENSE ../../NOTICE . && pnpm build"
   },
   "peerDependencies": {
-    "electron-gpui": "^0.1.1"
+    "electron-gpui": "^0.2.0"
   },
   "dependencies": {
     "unplugin": "^3.4.0"
