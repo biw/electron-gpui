@@ -149,16 +149,17 @@ function build(args: string[]): void {
   if (!["darwin", "win32", "linux"].includes(process.platform))
     fail(`unsupported platform ${process.platform}`);
   if (values.universal && process.platform !== "darwin") fail("--universal is supported only on macOS");
-  if (values.universal) run("rustup", ["target", "add", ...Object.values(MAC_TARGETS)]);
 
   const dir = resolve(positionals[0] ?? "native");
   const manifest = join(dir, "Cargo.toml");
   if (!existsSync(manifest)) fail(`no Cargo.toml in ${dir}; run \`electron-gpui init\` first`);
+  if (values.universal) run("rustup", ["target", "add", ...Object.values(MAC_TARGETS)], dir);
 
   const metadata = JSON.parse(
     execFileSync("cargo", ["metadata", "--format-version", "1", "--no-deps", "--manifest-path", manifest], {
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
+      cwd: dir,
     }),
   ) as CargoMetadata;
   const pkg = metadata.packages.find((p) => resolve(p.manifest_path) === manifest);
@@ -181,7 +182,7 @@ function build(args: string[]): void {
         ...(target ? ["--target", target] : []),
         ...(values.release ? ["--release"] : []),
       ],
-      { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
+      { cwd: dir, encoding: "utf8", stdio: ["inherit", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
     );
     if (result.error) fail(`failed to run cargo: ${result.error.message}`);
     if (result.status !== 0) process.exit(result.status ?? 1);
@@ -229,8 +230,8 @@ function sweep(dir: string, targetDir: string): void {
   else writeFileSync(stamp, "");
 }
 
-function run(command: string, args: string[]): void {
-  const result = spawnSync(command, args, { stdio: "inherit" });
+function run(command: string, args: string[], cwd?: string): void {
+  const result = spawnSync(command, args, { stdio: "inherit", cwd });
   if (result.error) fail(`failed to run ${command}: ${result.error.message}`);
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

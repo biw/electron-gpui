@@ -48,15 +48,17 @@ export interface WindowOptions {
   /**
    * `"hidden"` extends the content under a transparent titlebar and hides the
    * title, keeping the traffic lights, like `BrowserWindow`'s `titleBarStyle:
-   * "hidden"`. Defaults to `"default"`.
+   * "hidden"`. Applies on macOS; other platforms use native titlebars.
+   * Defaults to `"default"`.
    */
   titleBarStyle?: "default" | "hidden";
-  /** Position of the traffic lights in points, with `titleBarStyle: "hidden"`. */
+  /** macOS traffic-light position in points, with `titleBarStyle: "hidden"`. */
   trafficLightPosition?: { x: number; y: number };
   /**
    * `"transparent"` and `"blurred"` show what's behind the window where the view
    * doesn't paint (`"blurred"` blurs it, like a vibrancy material). Defaults to
-   * `"opaque"`.
+   * `"opaque"`. Blur falls back to transparency outside macOS; compositor
+   * support determines whether transparency is available.
    */
   background?: "opaque" | "transparent" | "blurred";
   /** Open above normal windows; see {@link GpuiWindow.setAlwaysOnTop}. */

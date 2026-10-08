@@ -367,7 +367,22 @@ pub fn create_stub_object(
                     scope: SymbolScope::Linkage,
                     weak: sym.is_weak,
                     section: SymbolSection::Absolute,
-                    flags: sym.flags,
+                    flags: match sym.flags {
+                        object::SymbolFlags::Elf { st_info, st_other } => {
+                            object::SymbolFlags::Elf {
+                                // A private symbol in the original must be externally
+                                // resolvable from the patch's other object files.
+                                st_info: (if sym.is_weak {
+                                    object::elf::STB_WEAK
+                                } else {
+                                    object::elf::STB_GLOBAL
+                                } << 4)
+                                    | (st_info & 0xf),
+                                st_other,
+                            }
+                        }
+                        flags => flags,
+                    },
                 });
             }
         }
@@ -838,6 +853,52 @@ mod tests {
         );
         assert!(sections.contains(&".CRT$XLB".into()));
         assert_eq!(disable_initializers(&mut bytes).unwrap(), 0);
+    }
+
+    #[test]
+    fn elf_stub_exposes_private_data_at_its_runtime_address() {
+        let mut object =
+            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        object.add_symbol(Symbol {
+            name: b"private_data".to_vec(),
+            value: 0,
+            size: 0,
+            kind: SymbolKind::Data,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Undefined,
+            flags: object::SymbolFlags::None,
+        });
+        let path = std::env::temp_dir().join(format!("egpui-elf-{}.o", std::process::id()));
+        std::fs::write(&path, object.write().unwrap()).unwrap();
+        let cache = ModuleCache {
+            format: BinaryFormat::Elf,
+            architecture: Architecture::X86_64,
+            symbols: HashMap::from([(
+                "private_data".into(),
+                CachedSymbol {
+                    address: 0x1234,
+                    size: 8,
+                    kind: SymbolKind::Data,
+                    is_undefined: false,
+                    is_weak: false,
+                    flags: object::SymbolFlags::Elf {
+                        st_info: object::elf::STT_OBJECT,
+                        st_other: 0,
+                    },
+                },
+            )]),
+            tls_init_data: Vec::new(),
+            tls_init_sizes: HashMap::new(),
+        };
+        let bytes = create_stub_object(&cache, &[&path], Architecture::X86_64, 0x7ff0_0000_0000);
+        std::fs::remove_file(path).unwrap();
+        let bytes = bytes.unwrap();
+        let parsed = File::parse(&*bytes).unwrap();
+        let symbol = parsed.symbol_by_name("private_data").unwrap();
+        assert!(symbol.is_global());
+        assert_eq!(symbol.address(), 0x7ff0_0000_1234);
+        assert!(parsed.symbol_by_name("main").unwrap().is_global());
     }
 
     #[test]
