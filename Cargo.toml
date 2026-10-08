@@ -13,10 +13,10 @@ publish = false
 electron-gpui = { path = "crates/electron-gpui" }
 # GPUI from Zed plus our embedded-mode patch (MacPlatform::new_embedded), on the
 # electron-gpui-embedded branch of https://github.com/biw/zed. See CONTRIBUTING.md.
-gpui = { git = "https://github.com/biw/zed", rev = "247b98566fc7b3708abae66b354142fee0b24c2b", default-features = false, features = [
+gpui = { git = "https://github.com/biw/zed", rev = "d54df6c2796725e4adb2d6de5150869a0e8f50d8", default-features = false, features = [
   "font-kit",
 ] }
-gpui_macos = { git = "https://github.com/biw/zed", rev = "247b98566fc7b3708abae66b354142fee0b24c2b", features = [
+gpui_macos = { git = "https://github.com/biw/zed", rev = "d54df6c2796725e4adb2d6de5150869a0e8f50d8", features = [
   "font-kit",
 ] }
 napi = { version = "3", default-features = false, features = ["napi6"] }

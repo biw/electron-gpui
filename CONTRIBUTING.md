@@ -45,7 +45,12 @@ GPUI is big, so `target/` grows quickly. Every addon build (`electron-gpui build
 
 ## GPUI and the Zed fork
 
-GPUI comes from [`biw/zed`](https://github.com/biw/zed), branch `electron-gpui-embedded`: a Zed commit plus one change that adds `MacPlatform::new_embedded()`, so GPUI runs inside Electron's `NSApp` instead of owning it. `Cargo.toml` pins it by `rev`.
+GPUI comes from [`biw/zed`](https://github.com/biw/zed), branch `electron-gpui-embedded`: a Zed commit plus two changes:
+
+- `MacPlatform::new_embedded()`, so GPUI runs inside Electron's `NSApp` instead of owning it.
+- Blurred window backgrounds that work on macOS 27 (submitted upstream as [zed-industries/zed#65361](https://github.com/zed-industries/zed/pull/65361); drop it once Zed has it).
+
+`Cargo.toml` pins it by `rev`.
 
 To move to a newer Zed:
 
