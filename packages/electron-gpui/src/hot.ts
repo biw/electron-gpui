@@ -38,21 +38,39 @@ function writeAtomic(file: string, contents: string): void {
   renameSync(staging, file);
 }
 
+/** A patch file: the jump table and the app process it was built for. */
+interface PatchEnvelope {
+  target: { pid: number; anchor: string };
+  table: unknown;
+}
+
+const PATCH_FILE = /^patch-(\d+)\.json$/;
+
 /**
  * Protocol (all files in `config.dir`):
  * - the app writes `app.json` — `{ pid, anchor }` — so patches can be built for it;
- * - the dev server writes `patch-<id>.json` (a Subsecond jump table);
+ * - the dev server writes `patch-<id>.json` — `{ target: { pid, anchor }, table }`,
+ *   where `table` is a Subsecond jump table (older dev servers write the bare table);
  * - the app applies it and writes `result-<id>.json` — `{ ok, error? }`.
+ *
+ * A jump table holds absolute addresses in one process, so the app only applies
+ * patches built for it, and removes each patch file before applying it: a patch
+ * that crashes the app must not be applied again by the next session.
  */
 export function startHotClient(addon: HotAddon, config: HotConfig, onApplied?: () => void): () => void {
   const { dir } = config;
   mkdirSync(dir, { recursive: true });
+  // Patches written before this app announced itself were built for an earlier process.
+  for (const name of readdirSync(dir)) {
+    if (PATCH_FILE.test(name)) rmSync(join(dir, name), { force: true });
+  }
+  const anchor = addon.hotAnchor();
   const appFile = join(dir, "app.json");
-  writeAtomic(appFile, JSON.stringify({ pid: process.pid, anchor: addon.hotAnchor() }));
+  writeAtomic(appFile, JSON.stringify({ pid: process.pid, anchor }));
 
   const handled = new Set<string>();
   const applyPending = (name: string): void => {
-    const match = /^patch-(\d+)\.json$/.exec(name);
+    const match = PATCH_FILE.exec(name);
     if (!match || handled.has(name)) return;
     const file = join(dir, name);
     if (!existsSync(file)) return;
@@ -61,13 +79,16 @@ export function startHotClient(addon: HotAddon, config: HotConfig, onApplied?: (
     const started = performance.now();
     let result: { ok: boolean; error?: string; ms?: number };
     try {
-      addon.applyHotPatch(readFileSync(file, "utf8"));
+      const contents = readFileSync(file, "utf8");
+      rmSync(file, { force: true });
+      const table = patchTableFor(contents, anchor);
+      addon.applyHotPatch(table);
       result = { ok: true, ms: Math.round(performance.now() - started) };
       onApplied?.();
     } catch (error) {
+      rmSync(file, { force: true });
       result = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-    rmSync(file, { force: true });
     writeAtomic(join(dir, `result-${id}.json`), JSON.stringify(result));
     // The file is gone, so the name can be reused (e.g. by a restarted dev server).
     handled.delete(name);
@@ -94,4 +115,17 @@ export function startHotClient(addon: HotAddon, config: HotConfig, onApplied?: (
   };
   process.once("exit", stop);
   return stop;
+}
+
+/** The jump table JSON in a patch file, if it was built for this process. */
+function patchTableFor(contents: string, anchor: string): string {
+  const parsed = JSON.parse(contents) as Partial<PatchEnvelope>;
+  if (!parsed.target) return contents;
+  const { pid, anchor: target } = parsed.target;
+  if (pid !== process.pid || target !== anchor) {
+    throw new Error(
+      `patch was built for app process ${pid} (anchor ${target}), not this one (${process.pid}, ${anchor})`,
+    );
+  }
+  return JSON.stringify(parsed.table);
 }

@@ -16,7 +16,7 @@ import {
   VIRTUAL_MODULE_ID,
 } from "./core.js";
 
-import { HotSession } from "./hot.js";
+import { HotSession, REBUILD_TRIGGER_GLOB } from "./hot.js";
 import { ElectronLauncher } from "./launcher.js";
 
 export type { ElectronGpuiOptions } from "./core.js";
@@ -181,8 +181,18 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
       rolldown: { renderChunk },
       vite: {
         // Electron's main process is a Node (SSR-style) build; keep emitted assets.
-        config() {
-          return { build: { emitAssets: true, ssrEmitAssets: true } };
+        config(config) {
+          // A watch `include` filter also drops files plugins add with `addWatchFile`,
+          // which would stop Rust rebuilds from restarting the app. Vite concatenates
+          // the arrays when it merges this in.
+          const include = config.build?.watch?.include;
+          return {
+            build: {
+              emitAssets: true,
+              ssrEmitAssets: true,
+              ...(include ? { watch: { include: [REBUILD_TRIGGER_GLOB] } } : {}),
+            },
+          };
         },
         configResolved(config) {
           watchMode = Boolean(config.build.watch);

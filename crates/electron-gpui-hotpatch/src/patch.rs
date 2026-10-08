@@ -17,7 +17,10 @@ use anyhow::{Context, Result, bail};
 use object::{
     Architecture, BinaryFormat, Endianness, Object, ObjectSection, ObjectSymbol, SymbolKind,
     SymbolScope,
-    macho::PLATFORM_MACOS,
+    macho::{
+        LC_SEGMENT_64, MH_MAGIC_64, PLATFORM_MACOS, S_INIT_FUNC_OFFSETS, S_MOD_INIT_FUNC_POINTERS,
+        S_MOD_TERM_FUNC_POINTERS, S_REGULAR, SECTION_TYPE,
+    },
     read::File,
     write::{MachOBuildVersion, StandardSection, Symbol, SymbolSection},
 };
@@ -112,6 +115,55 @@ impl ModuleCache {
             .map(|s| s.address)
             .with_context(|| format!("{ANCHOR_SYMBOL} not found in the original addon; was it built with the electron-gpui SDK and without stripping?"))
     }
+}
+
+/// Name given to initializer sections disabled by [`disable_initializers`].
+const DISABLED_INITIALIZERS: &[u8; 16] = b"__egpui_no_init\0";
+
+/// Turn the static initializer and terminator sections of a Mach-O object file
+/// into plain data, so the dylib it's linked into doesn't run them when loaded
+/// (or unloaded). Returns how many sections were changed.
+pub fn disable_initializers(object: &mut [u8]) -> Result<usize> {
+    fn read_u32(data: &[u8], at: usize) -> Result<u32> {
+        let bytes = data.get(at..at + 4).context("truncated Mach-O object")?;
+        Ok(u32::from_le_bytes(bytes.try_into()?))
+    }
+
+    if read_u32(object, 0)? != MH_MAGIC_64 {
+        bail!("not a 64-bit little-endian Mach-O object");
+    }
+    // mach_header_64 is 32 bytes; ncmds is its fifth field.
+    let ncmds = read_u32(object, 16)?;
+    let mut command = 32;
+    let mut disabled = 0;
+    for _ in 0..ncmds {
+        let cmd = read_u32(object, command)?;
+        let cmdsize = read_u32(object, command + 4)? as usize;
+        if cmd == LC_SEGMENT_64 {
+            // segment_command_64 is 72 bytes (nsects at 64), then 80-byte section_64s
+            // (sectname first, flags at 64).
+            let nsects = read_u32(object, command + 64)? as usize;
+            for index in 0..nsects {
+                let section = command + 72 + index * 80;
+                let flags = read_u32(object, section + 64)?;
+                if matches!(
+                    flags & SECTION_TYPE,
+                    S_MOD_INIT_FUNC_POINTERS | S_MOD_TERM_FUNC_POINTERS | S_INIT_FUNC_OFFSETS
+                ) {
+                    let regular = (flags & !SECTION_TYPE) | S_REGULAR;
+                    object[section + 64..section + 68].copy_from_slice(&regular.to_le_bytes());
+                    // The linker also recognizes `__mod_init_func` by name.
+                    object[section..section + 16].copy_from_slice(DISABLED_INITIALIZERS);
+                    disabled += 1;
+                }
+            }
+        }
+        if cmdsize == 0 {
+            bail!("malformed Mach-O load command");
+        }
+        command += cmdsize;
+    }
+    Ok(disabled)
 }
 
 /// Build an object file that defines every symbol the patch objects use but
@@ -316,4 +368,76 @@ pub fn create_jump_table(cache: &ModuleCache, patch: &Path, slide: u64) -> Resul
         new_base_address,
         ifunc_count: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use object::{
+        SectionFlags, SectionKind,
+        write::{self, Object as WriteObject},
+    };
+
+    use super::*;
+
+    fn object_with_initializer() -> Vec<u8> {
+        let mut obj = WriteObject::new(
+            BinaryFormat::MachO,
+            Architecture::Aarch64,
+            Endianness::Little,
+        );
+        let text = obj.section_id(write::StandardSection::Text);
+        obj.append_section_data(text, &[0; 4], 4);
+        let init = obj.add_section(
+            b"__DATA".to_vec(),
+            b"__mod_init_func".to_vec(),
+            SectionKind::Data,
+        );
+        obj.section_mut(init).flags = SectionFlags::MachO {
+            flags: S_MOD_INIT_FUNC_POINTERS,
+        };
+        obj.append_section_data(init, &[0; 8], 8);
+        obj.write().unwrap()
+    }
+
+    fn section_types(bytes: &[u8]) -> Vec<(String, u32)> {
+        File::parse(bytes)
+            .unwrap()
+            .sections()
+            .map(|section| {
+                let SectionFlags::MachO { flags } = section.flags() else {
+                    panic!("not Mach-O");
+                };
+                (section.name().unwrap().to_owned(), flags & SECTION_TYPE)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn initializer_sections_become_plain_data() {
+        let mut bytes = object_with_initializer();
+        assert!(
+            section_types(&bytes).contains(&("__mod_init_func".into(), S_MOD_INIT_FUNC_POINTERS))
+        );
+
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 1);
+        let sections = section_types(&bytes);
+        assert!(
+            sections.contains(&("__egpui_no_init".into(), S_REGULAR)),
+            "{sections:?}"
+        );
+        assert!(
+            sections
+                .iter()
+                .all(|(_, kind)| *kind != S_MOD_INIT_FUNC_POINTERS)
+        );
+
+        // Already disabled: nothing left to change.
+        assert_eq!(disable_initializers(&mut bytes).unwrap(), 0);
+    }
+
+    #[test]
+    fn rejects_other_files() {
+        assert!(disable_initializers(&mut [0u8; 8]).is_err());
+        assert!(disable_initializers(&mut []).is_err());
+    }
 }

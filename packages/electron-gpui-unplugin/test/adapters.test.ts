@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { build as esbuild } from "esbuild";
 import { rolldown } from "rolldown";
 import { rollup } from "rollup";
-import { build as viteBuild } from "vite";
+import { build as viteBuild, mergeConfig, type Plugin, type UserConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import webpack from "webpack";
 import esbuildPlugin from "../src/esbuild.js";
@@ -154,5 +154,24 @@ describe("bundler adapters", () => {
       logLevel: "silent",
     });
     expectLoads(await loadEsm(outfile), path.join(out, "app", "electron-gpui.node"));
+  });
+});
+
+describe("vite watch include", () => {
+  async function merged(user: UserConfig): Promise<UserConfig> {
+    const plugin = vitePlugin() as Plugin;
+    const hook = plugin.config as (config: UserConfig, env: unknown) => UserConfig | Promise<UserConfig>;
+    return mergeConfig(user, await hook(user, { command: "build", mode: "development" }));
+  }
+
+  it("keeps the hot-reload restart trigger watched when an include filter is set", async () => {
+    const config = await merged({ build: { watch: { include: ["src/**"] } } });
+    expect(config.build?.watch?.include).toEqual(["src/**", "**/electron-gpui-hot/*/rebuild-trigger"]);
+  });
+
+  it("leaves watching unrestricted when there's no include filter", async () => {
+    const config = await merged({ build: { watch: {} } });
+    expect(config.build?.watch?.include).toBeUndefined();
+    expect((await merged({})).build?.watch).toBeUndefined();
   });
 });

@@ -66,6 +66,8 @@ Rollup, Rolldown and Vite compute the path from each output chunk to the addon, 
 | `fileName`       | `"electron-gpui.node"`                            | Name of the emitted addon                                                                                                                                                                                         |
 | `assetDirectory` | output root                                       | Output subdirectory for the addon                                                                                                                                                                                 |
 
+With hot reload, the plugin restarts the app by touching `**/electron-gpui-hot/*/rebuild-trigger`, which it adds to the bundle's watch files. A watch `include` filter also applies to those files: the Vite plugin extends `build.watch.include` for you, and with Rollup or Rolldown you need to add the pattern to `watch.include` yourself.
+
 The plugin runs the `electron-gpui` CLI installed in your project directly, never through `npx`. It's meant for Node outputs such as Electron's main process, not browser bundles; Vite SSR asset emission is turned on automatically.
 
 ## License

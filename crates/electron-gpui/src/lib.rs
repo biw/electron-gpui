@@ -25,10 +25,15 @@
 //!
 //! electron_gpui::export! { "Hello" => Hello }
 //! ```
+//!
+//! GPUI's macros (`actions!`, `#[derive(IntoElement)]`, `#[derive(Action)]`, ...)
+//! expand to `gpui::` paths, so files that use them need the re-export in scope:
+//! `use electron_gpui::gpui;`.
 
 mod bridge;
 mod export;
 mod hot;
+pub mod macos;
 mod runtime;
 
 pub use bridge::WindowBridge;
@@ -75,8 +80,8 @@ pub trait RootView: gpui::Render + Sized + 'static {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::runtime::{
-        apply_hot_patch, close, hot_anchor, init, open_window, send, set_event_callback, shutdown,
-        window_count,
+        apply_hot_patch, close, hot_anchor, init, open_window, send, set_always_on_top,
+        set_event_callback, set_panic_log, shutdown, window_count,
     };
     pub use napi;
     pub use napi_derive;

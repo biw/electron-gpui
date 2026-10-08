@@ -62,6 +62,42 @@ describe("startHotClient", () => {
     expect(existsSync(join(dir, "patch-1.json"))).toBe(false);
   });
 
+  it("applies the table of a patch built for this process, removing the file first", async () => {
+    const file = join(dir, "patch-2.json");
+    const addon = fakeAddon(() => expect(existsSync(file)).toBe(false));
+    stop = startHotClient(addon, { dir });
+    writeFileSync(
+      file,
+      JSON.stringify({ target: { pid: process.pid, anchor: "0x1234" }, table: { map: {} } }),
+    );
+    expect(JSON.parse(await waitForFile(join(dir, "result-2.json"))).ok).toBe(true);
+    expect(addon.applied).toEqual(['{"map":{}}']);
+  });
+
+  it("refuses patches built for another process", async () => {
+    const addon = fakeAddon();
+    stop = startHotClient(addon, { dir });
+    writeFileSync(
+      join(dir, "patch-3.json"),
+      JSON.stringify({ target: { pid: 1, anchor: "0x1234" }, table: {} }),
+    );
+    const result = JSON.parse(await waitForFile(join(dir, "result-3.json")));
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("built for app process 1");
+    expect(addon.applied).toEqual([]);
+    expect(existsSync(join(dir, "patch-3.json"))).toBe(false);
+  });
+
+  it("drops patches left by an earlier session instead of applying them", async () => {
+    writeFileSync(join(dir, "patch-4.json"), '{"map":{}}');
+    const addon = fakeAddon();
+    stop = startHotClient(addon, { dir });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(addon.applied).toEqual([]);
+    expect(existsSync(join(dir, "patch-4.json"))).toBe(false);
+    expect(existsSync(join(dir, "result-4.json"))).toBe(false);
+  });
+
   it("reports patches the addon rejects", async () => {
     stop = startHotClient(
       fakeAddon(() => {

@@ -71,6 +71,20 @@ macro_rules! export {
             }
 
             #[napi]
+            pub fn set_always_on_top(
+                window_id: u32,
+                on_top: bool,
+                relative_level: Option<i32>,
+            ) -> napi::Result<()> {
+                $crate::__private::set_always_on_top(window_id, on_top, relative_level)
+            }
+
+            #[napi]
+            pub fn set_panic_log(path: Option<String>) -> napi::Result<()> {
+                $crate::__private::set_panic_log(path)
+            }
+
+            #[napi]
             pub fn window_count() -> napi::Result<u32> {
                 $crate::__private::window_count()
             }

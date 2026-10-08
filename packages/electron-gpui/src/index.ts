@@ -18,6 +18,9 @@ export interface GpuiAddon {
   close(windowId: number): void;
   windowCount(): number;
   shutdown(): void;
+  /** Present in addons built with SDK 0.2 or later. */
+  setAlwaysOnTop?(windowId: number, onTop: boolean, relativeLevel?: number | null): void;
+  setPanicLog?(path?: string | null): void;
   /** Present in addons built with the hot-reload-capable SDK. */
   hotAnchor?(): string;
   applyHotPatch?(jumpTableJson: string): void;
@@ -38,6 +41,22 @@ export interface WindowOptions {
   resizable?: boolean;
   /** Focus the window when it opens. Defaults to true. */
   focus?: boolean;
+  /**
+   * `"hidden"` extends the content under a transparent titlebar and hides the
+   * title, keeping the traffic lights, like `BrowserWindow`'s `titleBarStyle:
+   * "hidden"`. Defaults to `"default"`.
+   */
+  titleBarStyle?: "default" | "hidden";
+  /** Position of the traffic lights in points, with `titleBarStyle: "hidden"`. */
+  trafficLightPosition?: { x: number; y: number };
+  /**
+   * `"transparent"` and `"blurred"` show what's behind the window where the view
+   * doesn't paint (`"blurred"` blurs it, like a vibrancy material). Defaults to
+   * `"opaque"`.
+   */
+  background?: "opaque" | "transparent" | "blurred";
+  /** Open above normal windows; see {@link GpuiWindow.setAlwaysOnTop}. */
+  alwaysOnTop?: boolean;
 }
 
 type NativeEvent =
@@ -71,6 +90,20 @@ export class GpuiWindow<Message = unknown, Event = unknown> extends EventEmitter
   send(message: Message): void {
     this.#assertOpen();
     this.gpui.addon.send(this.id, JSON.stringify(message));
+  }
+
+  /**
+   * Keep the window above normal windows, like `BrowserWindow`'s
+   * `setAlwaysOnTop(flag, "floating", relativeLevel)`: `relativeLevel` raises it
+   * that many levels above the floating level.
+   */
+  setAlwaysOnTop(flag: boolean, relativeLevel = 0): void {
+    this.#assertOpen();
+    const { addon } = this.gpui;
+    if (!addon.setAlwaysOnTop) {
+      throw new Error("electron-gpui: setAlwaysOnTop needs an addon built with Rust SDK 0.2 or later");
+    }
+    addon.setAlwaysOnTop(this.id, flag, relativeLevel);
   }
 
   /** Close the window. A `closed` event follows. */
@@ -110,6 +143,13 @@ export interface CreateGpuiOptions {
    * down on `before-quit`; pass `null` to manage shutdown yourself.
    */
   app?: ElectronAppLike | null;
+  /**
+   * File to append a JSON line to for every native panic: `{ time, message,
+   * location, thread, aborts, backtrace }`. A panic while GPUI draws or handles
+   * input can't be caught and aborts the process (`aborts: true`), before any JS
+   * runs, so read this file on the next launch to report it.
+   */
+  panicLog?: string;
 }
 
 /** GPUI running inside this Electron main process. Create it with {@link createGpui}. */
@@ -118,8 +158,17 @@ export class Gpui extends EventEmitter<GpuiEvents> {
   #shutDown = false;
 
   /** @internal */
-  constructor(readonly addon: GpuiAddon) {
+  constructor(
+    readonly addon: GpuiAddon,
+    panicLog?: string,
+  ) {
     super();
+    if (panicLog !== undefined) {
+      if (!addon.setPanicLog) {
+        throw new Error("electron-gpui: panicLog needs an addon built with Rust SDK 0.2 or later");
+      }
+      addon.setPanicLog(panicLog);
+    }
     addon.init();
     addon.onEvent((json) => this.#dispatch(json));
   }
@@ -190,9 +239,9 @@ let current: Gpui | undefined;
  * Start GPUI from your addon. Call once from Electron's main process, after
  * `app.whenReady()`. Repeated calls return the same instance.
  *
- * @param addon Your loaded addon (`require("./native/index.node")`), or its
- *   location as an absolute path or `file:` URL
- *   (`new URL("./native/index.node", import.meta.url)` in ES modules).
+ * @param addon Your loaded addon (the `.node` file, `require`d), or its
+ *   location as an absolute path or `file:` URL (in ES modules, a `URL` made
+ *   relative to `import.meta.url`).
  */
 export function createGpui(addon: GpuiAddon | string | URL, options: CreateGpuiOptions = {}): Gpui {
   if (current) return current;
@@ -201,7 +250,7 @@ export function createGpui(addon: GpuiAddon | string | URL, options: CreateGpuiO
   const loaded = typeof addon === "string" || addon instanceof URL ? loadAddon(addon) : addon;
   checkProtocol(loaded);
 
-  const gpui = new Gpui(loaded);
+  const gpui = new Gpui(loaded, options.panicLog);
   const app = options.app === undefined ? defaultElectronApp() : options.app;
   app?.on("before-quit", () => gpui.shutdown());
 
@@ -221,7 +270,7 @@ export function loadAddon(location: string | URL): GpuiAddon {
     // A relative path would resolve against this package, not the caller.
     throw new Error(
       `electron-gpui: addon path must be absolute or a file: URL, got ${JSON.stringify(path)}. ` +
-        'Use path.join(__dirname, "native/index.node") or new URL("./native/index.node", import.meta.url).',
+        "Resolve it against __dirname (path.join) or import.meta.url (new URL).",
     );
   }
   return createRequire(import.meta.url)(path) as GpuiAddon;

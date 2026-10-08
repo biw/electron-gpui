@@ -1,4 +1,6 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 // Built from ./native and bundled by electron-gpui-unplugin (see vite.config.js).
 import addon from "virtual:electron-gpui/addon";
@@ -9,9 +11,10 @@ import { createGpui } from "electron-gpui";
 const asset = (file) => fileURLToPath(new URL(`../${file}`, import.meta.url));
 
 const SMOKE = Boolean(process.env.ELECTRON_GPUI_SMOKE);
+const smokePanicLog = join(tmpdir(), `electron-gpui-smoke-panics-${process.pid}.jsonl`);
 
 void app.whenReady().then(() => {
-  const gpui = createGpui(addon);
+  const gpui = createGpui(addon, SMOKE ? { panicLog: smokePanicLog } : {});
   if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
   if (SMOKE) return runSmokeTest(gpui);
 
@@ -82,6 +85,40 @@ async function runSmokeTest(gpui) {
     window.send({ type: "ping" });
     await pongAfterPanic;
     console.log("[smoke] on_message panic became a JS error; window still responds");
+
+    const logged = existsSync(smokePanicLog)
+      ? readFileSync(smokePanicLog, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+      : [];
+    rmSync(smokePanicLog, { force: true });
+    const entry = logged.find((panic) => panic.message === "requested by the smoke test");
+    if (!entry) return fail(`the panic wasn't logged: ${JSON.stringify(logged)}`);
+    if (entry.aborts) return fail("a caught on_message panic was logged as aborting");
+    console.log("[smoke] panic logged to the panic log");
+
+    // Window chrome options and runtime always-on-top.
+    const styled = gpui.openWindow("Counter", {
+      title: "smoke (styled)",
+      width: 300,
+      height: 200,
+      titleBarStyle: "hidden",
+      trafficLightPosition: { x: 16, y: 16 },
+      background: "blurred",
+      alwaysOnTop: true,
+    });
+    styled.setAlwaysOnTop(true, 2);
+    styled.setAlwaysOnTop(false);
+    const styledPong = new Promise((resolve) =>
+      styled.on("event", (event) => event.type === "pong" && resolve()),
+    );
+    styled.send({ type: "ping" });
+    await styledPong;
+    const styledClosed = new Promise((resolve) => styled.once("closed", resolve));
+    styled.close();
+    await styledClosed;
+    console.log("[smoke] window chrome options and setAlwaysOnTop work");
 
     const closed = new Promise((resolve) => window.once("closed", resolve));
     window.close();

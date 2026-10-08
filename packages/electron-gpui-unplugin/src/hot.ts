@@ -16,6 +16,12 @@ import type { ResolvedOptions } from "./core.js";
 
 const log = (message: string): void => console.log(`[electron-gpui] ${message}`);
 
+/**
+ * Matches the file a hot session touches to make the bundler rebuild (restarting
+ * the app). A watch `include` filter must keep matching it.
+ */
+export const REBUILD_TRIGGER_GLOB = "**/electron-gpui-hot/*/rebuild-trigger";
+
 /** Exit codes of `electron-gpui-hotpatch patch`. */
 const EXIT_COMPILE_ERROR = 10;
 
@@ -82,7 +88,7 @@ export function classifyChange(
   return typesChanged(previous, next) ? "full" : "hot";
 }
 
-interface AppInfo {
+export interface AppInfo {
   pid: number;
   anchor: string;
 }
@@ -171,6 +177,13 @@ export class HotSession {
     this.triggerFile = path.join(base, "rebuild-trigger");
     mkdirSync(this.dir, { recursive: true });
     if (!existsSync(this.triggerFile)) writeFileSync(this.triggerFile, "");
+    // Patches target the app process that was running when they were built; any
+    // left by an earlier dev server are stale.
+    for (const name of safeReaddir(this.dir)) {
+      if (/^(?:patch|result)-\d+\.json$|^pending\.json\.tmp$/.test(name.name)) {
+        rmSync(path.join(this.dir, name.name), { force: true });
+      }
+    }
   }
 
   /** False when the SDK has no patch tool (older SDK or unusual layout). */
@@ -308,10 +321,14 @@ export class HotSession {
 
     const id = this.#nextPatchId++;
     const resultFile = path.join(this.dir, `result-${id}.json`);
+    const patchFile = path.join(this.dir, `patch-${id}.json`);
     rmSync(resultFile, { force: true });
-    renameSync(pending, path.join(this.dir, `patch-${id}.json`));
+    writePatch(pending, app);
+    renameSync(pending, patchFile);
     const result = await waitForJson<{ ok: boolean; error?: string }>(resultFile, 10_000);
     rmSync(resultFile, { force: true });
+    // Unclaimed (the app is gone or hung): don't leave it for the next app.
+    rmSync(patchFile, { force: true });
     if (!result?.ok) {
       return this.#fullReload(
         result ? `the app couldn't apply the patch: ${result.error}` : "the app didn't respond",
@@ -336,6 +353,15 @@ export class HotSession {
     // The bundler watches this file: rebuilding the bundle restarts the app.
     writeFileSync(this.triggerFile, String(Date.now()));
   }
+}
+
+/**
+ * Wrap the jump table the tool wrote to `file` with the process it targets, so
+ * the app can refuse a patch built for another process.
+ */
+export function writePatch(file: string, app: AppInfo): void {
+  const table = readFileSync(file, "utf8");
+  writeFileSync(file, `{"target":${JSON.stringify({ pid: app.pid, anchor: app.anchor })},"table":${table}}`);
 }
 
 function safeReaddir(dir: string): Dirent[] {

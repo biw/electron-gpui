@@ -48,6 +48,22 @@ describe("createGpui", () => {
     expect(() => createGpui({} as GpuiAddon, { app: null })).toThrow(/export!/);
   });
 
+  it("sets the panic log before initializing", () => {
+    const calls: string[] = [];
+    const { addon } = fakeAddon({
+      setPanicLog: vi.fn(() => calls.push("setPanicLog")),
+      init: vi.fn(() => calls.push("init")),
+    });
+    createGpui(addon, { app: null, panicLog: "/tmp/panics.jsonl" });
+    expect(addon.setPanicLog).toHaveBeenCalledWith("/tmp/panics.jsonl");
+    expect(calls).toEqual(["setPanicLog", "init"]);
+  });
+
+  it("explains that panicLog needs a newer addon", () => {
+    const { addon } = fakeAddon();
+    expect(() => createGpui(addon, { app: null, panicLog: "/tmp/p" })).toThrow(/SDK 0\.2/);
+  });
+
   it("shuts down on before-quit", () => {
     const { addon } = fakeAddon();
     let beforeQuit = () => {};
@@ -64,6 +80,31 @@ describe("GpuiWindow", () => {
     expect(addon.openWindow).toHaveBeenCalledWith("Counter", '{"title":"t"}', '{"start":3}');
     window.send({ type: "ping" });
     expect(addon.send).toHaveBeenCalledWith(window.id, '{"type":"ping"}');
+  });
+
+  it("passes window chrome options through and sets always-on-top", () => {
+    const setAlwaysOnTop = vi.fn();
+    const { addon } = fakeAddon({ setAlwaysOnTop });
+    const options = {
+      titleBarStyle: "hidden",
+      trafficLightPosition: { x: 20, y: 16 },
+      background: "blurred",
+      alwaysOnTop: true,
+    } as const;
+    const window = createGpui(addon, { app: null }).openWindow("Settings", options);
+    expect(addon.openWindow).toHaveBeenCalledWith("Settings", JSON.stringify(options), null);
+    window.setAlwaysOnTop(true, 2);
+    window.setAlwaysOnTop(false);
+    expect(setAlwaysOnTop.mock.calls).toEqual([
+      [window.id, true, 2],
+      [window.id, false, 0],
+    ]);
+  });
+
+  it("explains that setAlwaysOnTop needs a newer addon", () => {
+    const { addon } = fakeAddon();
+    const window = createGpui(addon, { app: null }).openWindow("A");
+    expect(() => window.setAlwaysOnTop(true)).toThrow(/SDK 0\.2/);
   });
 
   it("routes events to the right window", () => {

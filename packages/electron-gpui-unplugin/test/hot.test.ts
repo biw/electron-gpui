@@ -1,6 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
-import { classifyChange, typeDefinitions, typesChanged } from "../src/hot.js";
+import { classifyChange, typeDefinitions, typesChanged, writePatch } from "../src/hot.js";
 
 const view = `
 use gpui::*;
@@ -66,5 +68,22 @@ describe("classifyChange", () => {
     expect(classifyChange(crate, lib, view, undefined)).toBe("full");
     expect(classifyChange(crate, path.join(crate, "Cargo.toml"), "a", "b")).toBe("full");
     expect(classifyChange(crate, path.join(crate, "build.rs"), "a", "b")).toBe("full");
+  });
+});
+
+describe("writePatch", () => {
+  it("records which app process the jump table was built for", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "electron-gpui-patch-"));
+    try {
+      const file = path.join(dir, "pending.json.tmp");
+      writeFileSync(file, '{"map":{"1":2},"aslr_reference":0}');
+      writePatch(file, { pid: 42, anchor: "0xabc" });
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+        target: { pid: 42, anchor: "0xabc" },
+        table: { map: { "1": 2 }, aslr_reference: 0 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

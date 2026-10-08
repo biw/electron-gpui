@@ -306,6 +306,26 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
         bail!("no object files found for {}", info.lib_name);
     }
 
+    // The addon's static initializers (GPUI action and `inventory` registrations,
+    // napi's export registration) already ran when it loaded. dlopen would run the
+    // patch's copies again, registering everything twice into the running addon's
+    // registries, which can crash. Keep them out of the patch: new registrations
+    // take effect after a restart.
+    for object in &mut objects {
+        if !object.starts_with(&thin) {
+            let copy = thin.join(object.file_name().context("object file without a name")?);
+            std::fs::copy(&*object, &copy)?;
+            *object = copy;
+        }
+        let mut bytes = std::fs::read(&*object)?;
+        if patch::disable_initializers(&mut bytes)
+            .with_context(|| format!("reading {}", object.display()))?
+            > 0
+        {
+            std::fs::write(&*object, bytes)?;
+        }
+    }
+
     let arch = if cfg!(target_arch = "aarch64") {
         object::Architecture::Aarch64
     } else {

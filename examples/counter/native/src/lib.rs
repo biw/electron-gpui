@@ -2,14 +2,20 @@
 //! implement `RootView`, and `export!` turns them into the `.node` addon.
 
 use electron_gpui::{
-    RootView, WindowBridge,
+    RootView,
+    WindowBridge,
+    // GPUI's `actions!` and derive macros expand to `gpui::` paths.
     gpui::{
-        Context, Div, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString, Stateful,
-        Window, div, prelude::*, px, rgb,
+        self, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render,
+        SharedString, Stateful, Window, actions, div, prelude::*, px, rgb,
     },
     serde_json::{Value, json},
 };
 use serde::Deserialize;
+
+// Registered actions run static initializers when the addon loads; hot patches
+// must not run them again (the hot-reload smoke test covers this).
+actions!(counter, [Increment, Decrement]);
 
 struct Counter {
     bridge: WindowBridge,
@@ -40,6 +46,10 @@ impl RootView for Counter {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        cx.bind_keys([
+            KeyBinding::new("up", Increment, Some("Counter")),
+            KeyBinding::new("down", Decrement, Some("Counter")),
+        ]);
         Counter {
             bridge,
             count: props["start"].as_i64().unwrap_or(0),
@@ -97,6 +107,9 @@ impl Render for Counter {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .track_focus(&self.focus_handle)
+            .key_context("Counter")
+            .on_action(cx.listener(|this, _: &Increment, _, cx| this.change(1, cx)))
+            .on_action(cx.listener(|this, _: &Decrement, _, cx| this.change(-1, cx)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let key = event.keystroke.to_string();
                 this.bridge.emit(json!({ "type": "key", "key": key })).ok();

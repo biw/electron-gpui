@@ -1,5 +1,7 @@
 use electron_gpui::{
     RootView, WindowBridge,
+    // GPUI's macros (`actions!`, `#[derive(IntoElement)]`, ...) expand to `gpui::`
+    // paths: add `self` to this list when you use them.
     gpui::{Context, IntoElement, Render, Window, div, prelude::*, rgb},
     serde_json::{Value, json},
 };

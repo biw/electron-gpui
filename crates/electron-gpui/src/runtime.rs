@@ -7,16 +7,21 @@
 
 use std::{
     any::Any,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     ffi::c_int,
-    panic::{AssertUnwindSafe, catch_unwind},
+    io::Write as _,
+    panic::{self, AssertUnwindSafe, PanicHookInfo, catch_unwind},
+    path::PathBuf,
     rc::Rc,
+    sync::{Mutex, Once},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use gpui::{
-    App, AppContext as _, Application, ApplicationHandle, Bounds, TitlebarOptions, WindowBounds,
-    WindowHandle, WindowId, WindowOptions, point, px, size,
+    App, AppContext as _, Application, ApplicationHandle, Bounds, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowId, WindowOptions, point, px,
+    size,
 };
 use gpui_macos::MacPlatform;
 use napi::{
@@ -75,6 +80,12 @@ impl Registry {
 trait AnyRootWindow {
     fn send(&self, cx: &mut App, message: Value) -> anyhow::Result<()>;
     fn close(&self, cx: &mut App) -> anyhow::Result<()>;
+    fn set_always_on_top(
+        &self,
+        cx: &mut App,
+        on_top: bool,
+        relative_level: isize,
+    ) -> anyhow::Result<()>;
 }
 
 impl<V: RootView> AnyRootWindow for WindowHandle<HotRoot<V>> {
@@ -99,6 +110,17 @@ impl<V: RootView> AnyRootWindow for WindowHandle<HotRoot<V>> {
     fn close(&self, cx: &mut App) -> anyhow::Result<()> {
         self.update(cx, |_, window, _| window.remove_window())
     }
+
+    fn set_always_on_top(
+        &self,
+        cx: &mut App,
+        on_top: bool,
+        relative_level: isize,
+    ) -> anyhow::Result<()> {
+        self.update(cx, |_, window, _| {
+            crate::macos::set_always_on_top(window, on_top, relative_level)
+        })
+    }
 }
 
 struct OpenedWindow {
@@ -120,7 +142,14 @@ thread_local! {
     /// bookkeeping and entity leases are left mid-flight), so further use could
     /// silently stop rendering; every later call fails with this message instead.
     static POISONED: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// How many JS-facing calls are running on this thread. A panic on the main
+    /// thread outside them (while GPUI draws or handles input for AppKit) can't be
+    /// caught and aborts the process.
+    static GUARD_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
+
+/// Where the panic hook appends a JSON line per panic (`setPanicLog`).
+static PANIC_LOG: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 fn debug_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -142,6 +171,45 @@ struct JsWindowOptions {
     min_height: Option<f32>,
     resizable: Option<bool>,
     focus: Option<bool>,
+    title_bar_style: Option<TitleBarStyle>,
+    traffic_light_position: Option<JsPoint>,
+    background: Option<Background>,
+    always_on_top: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum TitleBarStyle {
+    /// The standard titlebar.
+    Default,
+    /// Content extends under a transparent titlebar without a title; the traffic
+    /// lights stay.
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+struct JsPoint {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Background {
+    Opaque,
+    Transparent,
+    /// Transparent, with the content behind the window blurred.
+    Blurred,
+}
+
+impl From<Background> for WindowBackgroundAppearance {
+    fn from(background: Background) -> Self {
+        match background {
+            Background::Opaque => Self::Opaque,
+            Background::Transparent => Self::Transparent,
+            Background::Blurred => Self::Blurred,
+        }
+    }
 }
 
 fn error(message: impl Into<String>) -> Error {
@@ -156,7 +224,10 @@ fn guard<T>(name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
         return Err(error(reason));
     }
     let started = std::time::Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+    GUARD_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let result = catch_unwind(AssertUnwindSafe(f));
+    GUARD_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    let result = result.unwrap_or_else(|payload| {
         let reason = format!(
             "electron-gpui: native panic in {name}: {}. GPUI can't recover from a panic \
              that unwinds through it, so electron-gpui is disabled until the app relaunches \
@@ -186,11 +257,70 @@ fn panic_detail(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".into())
 }
 
-fn ensure_main_thread() -> Result<()> {
+fn is_main_thread() -> bool {
     unsafe extern "C" {
         fn pthread_main_np() -> c_int;
     }
-    if unsafe { pthread_main_np() } == 1 {
+    unsafe { pthread_main_np() == 1 }
+}
+
+/// Install (once) a panic hook that reports panics GPUI can't recover from and
+/// appends every panic to the panic log, then runs the previous hook.
+fn install_panic_hook() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            report_panic(info);
+            previous(info);
+        }));
+    });
+}
+
+fn report_panic(info: &PanicHookInfo<'_>) {
+    // Unwinding out of a GPUI callback that AppKit called aborts the process.
+    let aborts = is_main_thread() && GUARD_DEPTH.with(Cell::get) == 0;
+    if aborts {
+        eprintln!(
+            "electron-gpui: panic while GPUI was drawing or handling input; it can't be caught, \
+             so the process will abort"
+        );
+    }
+    let Some(path) = PANIC_LOG.lock().ok().and_then(|log| log.clone()) else {
+        return;
+    };
+    let entry = serde_json::json!({
+        "time": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64),
+        "message": panic_detail(info.payload()),
+        "location": info.location().map(|location| location.to_string()),
+        "thread": std::thread::current().name().map(str::to_owned),
+        "aborts": aborts,
+        "backtrace": std::backtrace::Backtrace::force_capture().to_string(),
+    });
+    // Best effort: the process may be about to abort.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{entry}");
+    }
+}
+
+/// Append a JSON line to `path` for every native panic (or stop, with `None`),
+/// so an app can report crashes GPUI can't recover from on its next launch.
+pub fn set_panic_log(path: Option<String>) -> Result<()> {
+    install_panic_hook();
+    *PANIC_LOG
+        .lock()
+        .map_err(|_| error("electron-gpui: panic log lock poisoned"))? = path.map(PathBuf::from);
+    Ok(())
+}
+
+fn ensure_main_thread() -> Result<()> {
+    if is_main_thread() {
         Ok(())
     } else {
         Err(error(
@@ -239,6 +369,7 @@ pub(crate) fn emit(event: Value) {
 pub fn init(registry: impl FnOnce() -> Registry) -> Result<()> {
     guard("init", || {
         ensure_main_thread()?;
+        install_panic_hook();
         if RUNTIME.with(|runtime| runtime.borrow().is_some()) {
             return Ok(());
         }
@@ -338,14 +469,27 @@ pub fn open_window(
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
                         title: options.title.map(Into::into),
-                        ..Default::default()
+                        appears_transparent: options.title_bar_style == Some(TitleBarStyle::Hidden),
+                        traffic_light_position: options
+                            .traffic_light_position
+                            .map(|position| point(px(position.x), px(position.y))),
                     }),
+                    window_background: options.background.map(Into::into).unwrap_or_default(),
                     focus: options.focus.unwrap_or(true),
                     is_resizable: options.resizable.unwrap_or(true),
                     window_min_size: min_size,
                     ..Default::default()
                 };
-                (registry.views[&view])(cx, window_options, props, WindowBridge::new(window_id))
+                let opened = (registry.views[&view])(
+                    cx,
+                    window_options,
+                    props,
+                    WindowBridge::new(window_id),
+                )?;
+                if options.always_on_top == Some(true) {
+                    opened.window.set_always_on_top(cx, true, 0)?;
+                }
+                anyhow::Ok(opened)
             })
             .map_err(|err| error(format!("failed to open GPUI window: {err:#}")))?;
 
@@ -375,6 +519,17 @@ pub fn send(window_id: u32, message_json: String) -> Result<()> {
         let window = window(window_id)?;
         app()?
             .update(|cx| window.send(cx, message))
+            .map_err(|err| error(format!("{err:#}")))
+    })
+}
+
+/// Keep a window above normal windows (see [`crate::macos::set_always_on_top`]).
+pub fn set_always_on_top(window_id: u32, on_top: bool, relative_level: Option<i32>) -> Result<()> {
+    guard("setAlwaysOnTop", || {
+        ensure_main_thread()?;
+        let window = window(window_id)?;
+        app()?
+            .update(|cx| window.set_always_on_top(cx, on_top, relative_level.unwrap_or(0) as isize))
             .map_err(|err| error(format!("{err:#}")))
     })
 }
@@ -472,6 +627,62 @@ mod tests {
 
         let defaults: JsWindowOptions = parse_json(None, "options").unwrap();
         assert!(defaults.title.is_none());
+    }
+
+    #[test]
+    fn window_chrome_options_parse() {
+        let options: JsWindowOptions = parse_json(
+            Some(
+                r#"{"titleBarStyle":"hidden","trafficLightPosition":{"x":20,"y":16},"background":"blurred","alwaysOnTop":true}"#
+                    .into(),
+            ),
+            "options",
+        )
+        .unwrap();
+        assert_eq!(options.title_bar_style, Some(TitleBarStyle::Hidden));
+        assert_eq!(
+            options.traffic_light_position,
+            Some(JsPoint { x: 20., y: 16. })
+        );
+        assert_eq!(
+            WindowBackgroundAppearance::from(options.background.unwrap()),
+            WindowBackgroundAppearance::Blurred
+        );
+        assert_eq!(options.always_on_top, Some(true));
+
+        let err = parse_json::<JsWindowOptions>(
+            Some(r#"{"background":"frosted"}"#.into()),
+            "window options",
+        )
+        .unwrap_err();
+        assert!(err.reason.contains("frosted"), "{}", err.reason);
+    }
+
+    #[test]
+    fn panic_log_records_panics_as_json_lines() {
+        let path =
+            std::env::temp_dir().join(format!("electron-gpui-panics-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        set_panic_log(Some(path.display().to_string())).unwrap();
+        let _ = std::thread::Builder::new()
+            .name("panicky".into())
+            .spawn(|| panic!("logged"))
+            .unwrap()
+            .join();
+        set_panic_log(None).unwrap();
+
+        let log = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // Other tests may panic while the log is set; find this test's entry.
+        let entry: Value = log
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|entry| entry["message"] == "logged")
+            .expect("the panic was logged");
+        assert_eq!(entry["thread"], "panicky");
+        // Off the main thread, a panic only ends that thread.
+        assert_eq!(entry["aborts"], false);
+        assert!(entry["location"].as_str().unwrap().contains("runtime.rs"));
     }
 
     #[test]

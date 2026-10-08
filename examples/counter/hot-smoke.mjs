@@ -4,9 +4,11 @@
 //   1. a code-only change must arrive in the running app (same process);
 //   2. a struct change must restart the app (new process) with the new code.
 //   3. a change in a local dependency crate (theme) must rebuild and restart.
+// It also checks the patch doesn't run the crate's static initializers (the
+// counter's GPUI action registrations) a second time.
 // The source files are always restored.
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +18,7 @@ const themeSource = join(here, "theme/src/lib.rs");
 const originals = new Map([source, themeSource].map((file) => [file, readFileSync(file, "utf8")]));
 const status = join(tmpdir(), `electron-gpui-hot-smoke-${process.pid}.json`);
 const deadline = (ms) => Date.now() + ms;
+const patchBuilds = join(here, "../../target/electron-gpui-hot/counter_native");
 
 const dev = spawn(join(here, "node_modules/.bin/vp"), ["build", "--watch"], {
   cwd: here,
@@ -47,6 +50,17 @@ async function waitFor(description, predicate, ms) {
   throw new Error(`timed out waiting for ${description}; last status: ${JSON.stringify(readStatus())}`);
 }
 
+/** The most recently linked patch dylib. */
+function newestPatch() {
+  const builds = readdirSync(patchBuilds)
+    .filter((name) => name.startsWith("patch-"))
+    .map((name) => join(patchBuilds, name, "libcounter_native-patch.dylib"))
+    .filter((file) => existsSync(file))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  if (builds.length === 0) throw new Error(`no patch dylib in ${patchBuilds}`);
+  return builds[0];
+}
+
 function edit(transform, file = source) {
   const next = transform(readFileSync(file, "utf8"));
   if (next === readFileSync(file, "utf8")) throw new Error(`edit didn't change ${file}`);
@@ -69,6 +83,11 @@ try {
   if (hot.pid !== first.pid)
     throw new Error(`expected a hot patch, but the app restarted (${first.pid} -> ${hot.pid})`);
   console.log(`[hot-smoke] code change hot-patched into ${hot.pid} without a restart`);
+  const loadCommands = execFileSync("otool", ["-l", newestPatch()], { encoding: "utf8" });
+  if (/__mod_init_func|__mod_term_func|__init_offsets/.test(loadCommands)) {
+    throw new Error("the patch dylib runs static initializers again");
+  }
+  console.log("[hot-smoke] the patch doesn't re-run static initializers");
 
   edit((s) =>
     s
