@@ -80,7 +80,6 @@ async function runSmokeTest(gpui) {
     if ((await page.webContents.executeJavaScript("1 + 1")) !== 2)
       return fail("BrowserWindow stopped responding");
     console.log("[smoke] GPUI rendered and BrowserWindow remains responsive");
-    page.close();
 
     window.send({ type: "setMessage", text: "hello from smoke test" });
 
@@ -138,6 +137,12 @@ async function runSmokeTest(gpui) {
     console.log("[smoke] window closed");
 
     if (gpui.windowCount() !== 0) return fail(`expected 0 windows, got ${gpui.windowCount()}`);
+    gpui.shutdown();
+    gpui.shutdown();
+    if ((await page.webContents.executeJavaScript("1 + 1")) !== 2)
+      return fail("GPUI shutdown stopped Electron's BrowserWindow");
+    console.log("[smoke] idempotent shutdown leaves Electron responsive");
+    page.close();
     console.log("[smoke] PASS");
     app.exit(0);
   } catch (error) {
