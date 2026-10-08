@@ -69,6 +69,7 @@ pub fn fat_flags() -> Vec<&'static str> {
             "-Cdebuginfo=2",
             "-Clink-arg=/DEBUG:FULL",
             "-Clink-arg=/OPT:NOICF",
+            "-Clink-arg=/INCREMENTAL:NO",
         ]);
     }
     flags
@@ -94,6 +95,7 @@ pub fn patch_flags(output: &Path) -> Vec<String> {
             "/DEBUG:FULL".into(),
             "/EXPORT:main".into(),
             "/OPT:NOICF".into(),
+            "/INCREMENTAL:NO".into(),
             format!("/PDB:{}", output.with_extension("pdb").display()),
             format!("/OUT:{}", output.display()),
         ]

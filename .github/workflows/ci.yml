@@ -67,6 +67,8 @@ jobs:
       - name: Hot reload smoke test
         timeout-minutes: 30
         if: matrix.electron == 'latest'
+        env:
+          ELECTRON_GPUI_HOT_DEBUG: "1"
         run: pnpm exec node scripts/ci-smoke.mjs ${{ matrix.platform.display }} smoke:hot
       - name: Upload failure logs
         if: failure()

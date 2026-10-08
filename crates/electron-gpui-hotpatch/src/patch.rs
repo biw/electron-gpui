@@ -488,7 +488,17 @@ pub fn create_jump_table(cache: &ModuleCache, patch: &Path, slide: u64) -> Resul
         PATCH_SENTINEL
     };
     let new_base_address = new_symbols.get(sentinel).copied();
+    let debug = std::env::var_os("ELECTRON_GPUI_HOT_DEBUG").is_some();
     for (name, address) in &new_symbols {
+        if debug && (name.contains("deliver_message") || name.contains("render_view")) {
+            eprintln!(
+                "hot dispatch {name}: original {:?}, patch {address:#x}",
+                cache
+                    .symbols
+                    .get(name)
+                    .map(|symbol| (symbol.address.wrapping_add(slide), symbol.kind))
+            );
+        }
         if let Some(old) = cache
             .symbols
             .get(name)
@@ -528,7 +538,9 @@ fn pdb_symbols(path: &Path) -> Result<HashMap<String, CachedSymbol>> {
             Ok(pdb::SymbolData::Public(data)) => (
                 data.name.to_string().into_owned(),
                 data.offset,
-                if data.function {
+                // LLVM can mark Rust functions as executable code without the
+                // separate PDB function flag. Both denote callable addresses.
+                if data.code || data.function {
                     SymbolKind::Text
                 } else {
                     SymbolKind::Data
