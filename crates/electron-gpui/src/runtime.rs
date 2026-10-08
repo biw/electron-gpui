@@ -675,7 +675,11 @@ mod tests {
         );
         assert_eq!(
             WindowBackgroundAppearance::from(options.background.unwrap()),
-            WindowBackgroundAppearance::Blurred
+            if cfg!(target_os = "macos") {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            }
         );
         assert_eq!(options.always_on_top, Some(true));
 
