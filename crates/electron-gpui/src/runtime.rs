@@ -286,9 +286,9 @@ fn report_panic(info: &PanicHookInfo<'_>) {
              so the process will abort"
         );
     }
-    let Some(path) = PANIC_LOG.lock().ok().and_then(|log| log.clone()) else {
+    if PANIC_LOG.lock().map_or(true, |log| log.is_none()) {
         return;
-    };
+    }
     let entry = serde_json::json!({
         "time": SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -299,13 +299,19 @@ fn report_panic(info: &PanicHookInfo<'_>) {
         "aborts": aborts,
         "backtrace": std::backtrace::Backtrace::force_capture().to_string(),
     });
-    // Best effort: the process may be about to abort.
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    let line = format!("{entry}\n");
+    // One write per entry, under the lock, so panics on several threads at once
+    // don't interleave. Best effort: the process may be about to abort.
+    let Ok(log) = PANIC_LOG.lock() else {
+        return;
+    };
+    if let Some(path) = log.as_ref()
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
     {
-        let _ = writeln!(file, "{entry}");
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -658,8 +664,9 @@ mod tests {
         assert!(err.reason.contains("frosted"), "{}", err.reason);
     }
 
+    /// One test, because the panic log is process-wide.
     #[test]
-    fn panic_log_records_panics_as_json_lines() {
+    fn panic_log_records_each_panic_as_a_json_line() {
         let path =
             std::env::temp_dir().join(format!("electron-gpui-panics-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -669,20 +676,39 @@ mod tests {
             .spawn(|| panic!("logged"))
             .unwrap()
             .join();
+        // Panics on several threads at once still log whole lines.
+        let threads: Vec<_> = (0..8)
+            .map(|i| std::thread::spawn(move || panic!("concurrent {i}")))
+            .collect();
+        for thread in threads {
+            let _ = thread.join();
+        }
         set_panic_log(None).unwrap();
 
         let log = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        // Other tests may panic while the log is set; find this test's entry.
-        let entry: Value = log
+        // Other tests may panic while the log is set.
+        let entries: Vec<Value> = log
             .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .map(|line| serde_json::from_str(line).expect("a whole JSON line"))
+            .collect();
+        let entry = entries
+            .iter()
             .find(|entry| entry["message"] == "logged")
             .expect("the panic was logged");
         assert_eq!(entry["thread"], "panicky");
         // Off the main thread, a panic only ends that thread.
         assert_eq!(entry["aborts"], false);
         assert!(entry["location"].as_str().unwrap().contains("runtime.rs"));
+        let concurrent = entries
+            .iter()
+            .filter(|entry| {
+                entry["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with("concurrent "))
+            })
+            .count();
+        assert_eq!(concurrent, 8, "{log}");
     }
 
     #[test]
