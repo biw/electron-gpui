@@ -315,9 +315,14 @@ mod tests {
 
     #[test]
     fn never_reuses_the_original_import_library_output() {
-        let args = ["/IMPLIB:C:\\target\\original.dll.lib".into(), "kernel32.lib".into()];
+        let args = [
+            "/IMPLIB:C:\\target\\original.dll.lib".into(),
+            "kernel32.lib".into(),
+        ];
         let kept = kept_link_flags(&args);
         assert!(!kept.iter().any(|arg| arg.starts_with("/IMPLIB:")));
-        if cfg!(target_os = "windows") { assert_eq!(kept, ["kernel32.lib"]); }
+        if cfg!(target_os = "windows") {
+            assert_eq!(kept, ["kernel32.lib"]);
+        }
     }
 }
