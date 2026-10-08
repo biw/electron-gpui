@@ -3,11 +3,11 @@
   "private": true,
   "packageManager": "pnpm@11.28.2",
   "scripts": {
-    "build": "pnpm --filter './packages/*' build",
+    "build": "pnpm --filter electron-gpui --filter electron-gpui-unplugin build",
     "build:example": "pnpm build",
     "dev": "pnpm build:example && pnpm --filter counter-example dev",
     "smoke": "pnpm build:example && pnpm --filter counter-example smoke",
-    "test": "pnpm --filter './packages/*' test && cargo test --workspace",
+    "test": "pnpm --filter electron-gpui --filter electron-gpui-unplugin test && cargo test --workspace",
     "lint": "pnpm build && vp check && cargo fmt -p electron-gpui -p electron-gpui-hotpatch -p counter-native -p counter-theme --check && cargo clippy --workspace --all-targets -- -D warnings",
     "format": "vp fmt && cargo fmt -p electron-gpui -p electron-gpui-hotpatch -p counter-native -p counter-theme",
     "clean:cargo": "node scripts/sweep-cargo.mjs --force",

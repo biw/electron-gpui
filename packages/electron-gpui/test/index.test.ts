@@ -71,6 +71,32 @@ describe("createGpui", () => {
     beforeQuit();
     expect(addon.shutdown).toHaveBeenCalledTimes(1);
   });
+
+  it("drives optional Linux polling and clears the timer on idempotent shutdown", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const cleared = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const { addon, emit } = fakeAddon({ pollEvents: vi.fn() });
+      const gpui = createGpui(addon, { app: null });
+      const timer = interval.mock.results[0]!.value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+      const window = gpui.openWindow("A");
+      expect(timer.hasRef()).toBe(true);
+      emit({ windowId: window.id, type: "closed" });
+      expect(timer.hasRef()).toBe(false);
+      gpui.shutdown();
+      gpui.shutdown();
+      expect(cleared).toHaveBeenCalledWith(timer);
+      expect(addon.shutdown).toHaveBeenCalledTimes(1);
+      expect(() => gpui.openWindow("A")).toThrow(/after shutdown/);
+    } finally {
+      _resetForTests();
+      Object.defineProperty(process, "platform", descriptor);
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("GpuiWindow", () => {

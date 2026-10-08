@@ -30,6 +30,7 @@ async function ready(test, child) {
 }
 try {
   if (process.platform === "linux") {
+    env.LIBGL_ALWAYS_SOFTWARE = "1";
     env.ELECTRON_GPUI_ELECTRON_ARGS = `--ozone-platform=${display} --no-sandbox`;
     if (display === "x11") {
       delete env.WAYLAND_DISPLAY;

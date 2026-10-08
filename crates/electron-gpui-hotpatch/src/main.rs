@@ -345,11 +345,14 @@ fn patch(crate_dir: &Path, anchor_hex: &str, out: &Path) -> Result<ExitCode> {
     // Link only the crate's code plus the stub; everything else resolves to the
     // running addon (through the stub) or to system libraries.
     let dylib = thin.join(platform::library_name(&format!("{}-patch", info.lib_name)));
-    let status = platform::linker()?
-        .args(&objects)
-        .arg(&stub)
-        .args(kept_link_flags(&fat_link_args))
-        .args(platform::patch_flags(&dylib))
+    let mut arguments: Vec<_> = objects
+        .iter()
+        .chain(std::iter::once(&stub))
+        .map(|path| path.display().to_string())
+        .collect();
+    arguments.extend(kept_link_flags(&fat_link_args));
+    arguments.extend(platform::patch_flags(&dylib));
+    let status = platform::patch_linker(&arguments, &dylib)?
         .current_dir(&invocation.cwd)
         .status()?;
     if !status.success() {

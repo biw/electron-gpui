@@ -93,7 +93,17 @@ impl ModuleCache {
             .to_vec();
         let (tls_addr, tls_size, tls_index) = tls
             .as_ref()
-            .map(|s| (s.address(), s.size(), Some(s.index())))
+            .map(|s| {
+                (
+                    if obj.format() == BinaryFormat::Pe {
+                        s.address().wrapping_sub(obj.relative_address_base())
+                    } else {
+                        s.address()
+                    },
+                    s.size(),
+                    Some(s.index()),
+                )
+            })
             .unwrap_or((0, 0, None));
         let mut tls_syms: Vec<(u64, String)> = obj
             .symbols()

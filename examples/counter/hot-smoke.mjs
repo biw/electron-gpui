@@ -63,7 +63,7 @@ async function waitFor(description, predicate, ms) {
 }
 
 function edit(transform, file = source) {
-  const next = transform(readFileSync(file, "utf8"));
+  const next = transform(readFileSync(file, "utf8").replaceAll("\r\n", "\n"));
   if (next === readFileSync(file, "utf8")) throw new Error(`edit didn't change ${file}`);
   writeFileSync(file, next);
 }

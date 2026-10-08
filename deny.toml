@@ -2,7 +2,12 @@
 # electron-gpui addon.
 
 [graph]
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
 all-features = false
 
 [licenses]
@@ -29,6 +34,8 @@ exceptions = [
   { allow = ["MPL-2.0"], crate = "cbindgen" },
   # Pulled in by dirs-sys (via GPUI).
   { allow = ["MPL-2.0"], crate = "option-ext" },
+  # Unmodified DirectWrite bindings used by GPUI/font-kit on Windows.
+  { allow = ["MPL-2.0"], crate = "dwrote" },
 ]
 
 [bans]

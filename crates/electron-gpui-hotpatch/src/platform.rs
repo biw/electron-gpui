@@ -114,6 +114,51 @@ pub fn patch_flags(output: &Path) -> Vec<String> {
     }
 }
 
+/// MSVC's command-line limit is smaller than a typical Rust link invocation.
+pub fn patch_linker(args: &[String], output: &Path) -> Result<Command> {
+    let mut command = linker()?;
+    if cfg!(target_os = "windows") {
+        let response = output.with_extension("rsp");
+        let text = args
+            .iter()
+            .map(|arg| quote_windows_argument(arg))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bytes: Vec<u8> = std::iter::once(0xfeff)
+            .chain(text.encode_utf16())
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        std::fs::write(&response, bytes)?;
+        command.arg(format!("@{}", response.display()));
+    } else {
+        command.args(args);
+    }
+    Ok(command)
+}
+
+fn quote_windows_argument(argument: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut slashes = 0;
+    for character in argument.chars() {
+        if character == '\\' {
+            slashes += 1;
+            continue;
+        }
+        quoted.extend(std::iter::repeat_n(
+            '\\',
+            slashes * if character == '"' { 2 } else { 1 },
+        ));
+        slashes = 0;
+        if character == '"' {
+            quoted.push('\\');
+        }
+        quoted.push(character);
+    }
+    quoted.extend(std::iter::repeat_n('\\', slashes * 2));
+    quoted.push('"');
+    quoted
+}
+
 pub fn kept_link_flags(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut iterator = args.iter();
@@ -238,6 +283,12 @@ mod tests {
             windows_arguments(r#"/DLL "/OUT:C:\My App\addon.dll" "C:\My App\tip.rcgu.o""#).unwrap(),
             ["/DLL", r"/OUT:C:\My App\addon.dll", r"C:\My App\tip.rcgu.o"]
         );
+        for argument in [r"C:\My App\", "contains \"quotes\"", "", "/DLL"] {
+            assert_eq!(
+                windows_arguments(&quote_windows_argument(argument)).unwrap(),
+                [argument]
+            );
+        }
     }
     #[test]
     fn finds_native_artifacts_without_guessing_directories() {

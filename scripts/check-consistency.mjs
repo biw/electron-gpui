@@ -37,6 +37,23 @@ if (new Set(Object.values(toolchains)).size > 1) {
   problems.push(`Rust toolchains differ: ${JSON.stringify(toolchains)}`);
 }
 
+const gpuiPins = [
+  ...read("Cargo.toml").matchAll(
+    /^gpui(?:_macos|_windows|_linux)?\s*=\s*\{[^}]*rev\s*=\s*"([a-f0-9]+)"[^}]*\}/gm,
+  ),
+].map((match) => match[1]);
+if (gpuiPins.length !== 4 || new Set(gpuiPins).size !== 1) {
+  problems.push("All four GPUI platform dependencies must pin the same revision");
+}
+const lockedPins = [
+  ...read("Cargo.lock").matchAll(
+    /source = "git\+https:\/\/github\.com\/biw\/zed\?rev=([a-f0-9]+)#([a-f0-9]+)"/g,
+  ),
+];
+if (!lockedPins.length || lockedPins.some((match) => match[1] !== gpuiPins[0] || match[2] !== gpuiPins[0])) {
+  problems.push("Cargo.lock must match the GPUI platform revision");
+}
+
 if (problems.length) {
   for (const problem of problems) console.error(`✗ ${problem}`);
   process.exit(1);

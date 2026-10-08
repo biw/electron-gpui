@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 import {
   ADDON_PATH_PLACEHOLDER,
@@ -103,6 +106,38 @@ describe("resolveAddonPath", () => {
 
   it("leaves chunks without the addon alone", () => {
     expect(resolveAddonPath("export {}", "main.js", "electron-gpui.node")).toBeUndefined();
+  });
+});
+
+describe("Windows development loading", () => {
+  it("loads process-owned copies and preserves an older addon across rebuilds", async () => {
+    const project = mkdtempSync(path.join(tmpdir(), "egpui-copy-"));
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const originalDlopen = process.dlopen;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const loaded: string[] = [];
+    process.dlopen = ((_target: unknown, file: string) => {
+      loaded.push(file);
+    }) as typeof process.dlopen;
+    try {
+      const build = async (version: string) => {
+        writeFileSync(path.join(project, "addon.node"), version);
+        const module = path.join(project, `module-${version}.mjs`);
+        writeFileSync(module, addonModuleCode("addon.node", undefined, true));
+        await import(pathToFileURL(module).href);
+      };
+      await build("first");
+      await build("second");
+      expect(loaded[0]).not.toBe(loaded[1]);
+      expect(path.dirname(loaded[0]!)).toBe(path.join(tmpdir(), "electron-gpui-addons", String(process.pid)));
+      expect(readFileSync(loaded[0]!, "utf8")).toBe("first");
+      expect(readFileSync(loaded[1]!, "utf8")).toBe("second");
+    } finally {
+      process.dlopen = originalDlopen;
+      Object.defineProperty(process, "platform", descriptor);
+      for (const file of loaded) rmSync(file, { force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 });
 

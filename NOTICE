@@ -8,9 +8,13 @@ licensed under the Apache License, Version 2.0
 (https://www.apache.org/licenses/LICENSE-2.0).
 
 Modifications: GPUI is used from https://github.com/biw/zed (branch
-electron-gpui-embedded), which modifies crates/gpui_macos/src/platform.rs to
-add an embedded mode (MacPlatform::new_embedded) for running GPUI inside a
-host application that owns NSApp and its run loop.
+electron-gpui-embedded-cross-platform), which adds embedded initialization
+for macOS, Windows and Linux so the host owns the application event loop,
+Windows WARP fallback, and Windows/X11 always-on-top support.
+
+Windows font rendering uses unmodified dwrote DirectWrite bindings
+(https://crates.io/crates/dwrote), licensed under MPL-2.0. Source and the
+Mozilla Public License are included in the published crate distribution.
 
 Hot patching uses Subsecond (https://github.com/DioxusLabs/dioxus), Copyright
 Dioxus Labs, licensed under MIT OR Apache-2.0. crates/electron-gpui-hotpatch
