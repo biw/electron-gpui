@@ -72,3 +72,4 @@ jobs:
         with:
           name: smoke-${{ matrix.platform.os }}-${{ matrix.platform.display }}-${{ matrix.electron }}
           path: .context/*.log
+          include-hidden-files: true

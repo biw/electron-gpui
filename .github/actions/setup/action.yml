@@ -23,3 +23,5 @@ runs:
       run: rustup toolchain install
       shell: bash
     - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true

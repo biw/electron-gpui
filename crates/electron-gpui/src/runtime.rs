@@ -10,6 +10,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     io::Write as _,
+    mem::ManuallyDrop,
     panic::{self, AssertUnwindSafe, PanicHookInfo, catch_unwind},
     path::PathBuf,
     rc::Rc,
@@ -137,7 +138,11 @@ struct Runtime {
 }
 
 thread_local! {
-    static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) };
+    // GPUI app/platform state is process-owned. In particular, Linux runs TLS
+    // destructors during Electron's exit; dropping GPUI then can call back into
+    // already-destroyed thread locals. shutdown closes windows and releases NAPI
+    // callbacks, while the app itself stays alive until the OS reclaims it.
+    static RUNTIME: RefCell<Option<ManuallyDrop<Runtime>>> = const { RefCell::new(None) };
     /// Set when a panic unwound through GPUI. GPUI isn't unwind-safe (its update
     /// bookkeeping and entity leases are left mid-flight), so further use could
     /// silently stop rendering; every later call fails with this message instead.
@@ -402,14 +407,14 @@ pub fn init(registry: impl FnOnce() -> Registry) -> Result<()> {
             });
 
         RUNTIME.with(|runtime| {
-            *runtime.borrow_mut() = Some(Runtime {
+            *runtime.borrow_mut() = Some(ManuallyDrop::new(Runtime {
                 platform,
                 app: Rc::new(app),
                 registry: Rc::new(registry()),
                 windows: HashMap::new(),
                 next_window_id: 1,
                 events: None,
-            })
+            }))
         });
         Ok(())
     })
