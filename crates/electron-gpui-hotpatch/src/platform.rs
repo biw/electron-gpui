@@ -204,8 +204,10 @@ pub fn expand_response_files(args: &[String]) -> Result<Vec<String>> {
                 }
                 String::from_utf16(
                     &bytes[2..]
-                        .chunks_exact(2)
-                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|bytes| u16::from_le_bytes(*bytes))
                         .collect::<Vec<_>>(),
                 )?
             } else {

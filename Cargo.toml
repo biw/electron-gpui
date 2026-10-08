@@ -13,14 +13,14 @@ publish = false
 electron-gpui = { path = "crates/electron-gpui" }
 # GPUI from Zed plus our embedded-platform patches, on the
 # electron-gpui-embedded-cross-platform branch of https://github.com/biw/zed. See CONTRIBUTING.md.
-gpui = { git = "https://github.com/biw/zed", rev = "eb595463b2aba5475c19c4f6bba4c227dcb06f46", default-features = false, features = [
+gpui = { git = "https://github.com/biw/zed", rev = "6fb97958851cad6f8922df73404304d3e2da08a3", default-features = false, features = [
   "font-kit",
 ] }
-gpui_macos = { git = "https://github.com/biw/zed", rev = "eb595463b2aba5475c19c4f6bba4c227dcb06f46", features = [
+gpui_macos = { git = "https://github.com/biw/zed", rev = "6fb97958851cad6f8922df73404304d3e2da08a3", features = [
   "font-kit",
 ] }
-gpui_windows = { git = "https://github.com/biw/zed", rev = "eb595463b2aba5475c19c4f6bba4c227dcb06f46", default-features = false }
-gpui_linux = { git = "https://github.com/biw/zed", rev = "eb595463b2aba5475c19c4f6bba4c227dcb06f46", features = [
+gpui_windows = { git = "https://github.com/biw/zed", rev = "6fb97958851cad6f8922df73404304d3e2da08a3", default-features = false }
+gpui_linux = { git = "https://github.com/biw/zed", rev = "6fb97958851cad6f8922df73404304d3e2da08a3", features = [
   "x11",
   "wayland",
 ] }

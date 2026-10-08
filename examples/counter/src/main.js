@@ -13,38 +13,44 @@ const asset = (file) => fileURLToPath(new URL(`../${file}`, import.meta.url));
 const SMOKE = Boolean(process.env.ELECTRON_GPUI_SMOKE);
 const smokePanicLog = join(tmpdir(), `electron-gpui-smoke-panics-${process.pid}.jsonl`);
 
-void app.whenReady().then(() => {
-  const gpui = createGpui(addon, SMOKE ? { panicLog: smokePanicLog } : {});
-  if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
-  if (SMOKE) return runSmokeTest(gpui);
+void app
+  .whenReady()
+  .then(() => {
+    const gpui = createGpui(addon, SMOKE ? { panicLog: smokePanicLog } : {});
+    if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
+    if (SMOKE) return runSmokeTest(gpui);
 
-  const page = new BrowserWindow({
-    width: 520,
-    height: 420,
-    x: 80,
-    y: 120,
-    title: "Electron (web)",
-    webPreferences: { preload: asset("preload.cjs") },
+    const page = new BrowserWindow({
+      width: 520,
+      height: 420,
+      x: 80,
+      y: 120,
+      title: "Electron (web)",
+      webPreferences: { preload: asset("preload.cjs") },
+    });
+    void page.loadFile(asset("index.html"));
+
+    const counter = gpui.openWindow(
+      "Counter",
+      { title: "GPUI (native)", width: 520, height: 360 },
+      { start: 0 },
+    );
+
+    // GPUI -> page
+    counter.on("event", (event) => page.webContents.send("gpui-event", event));
+    counter.on("closed", () => {
+      if (!page.isDestroyed()) page.webContents.send("gpui-event", { type: "closed" });
+    });
+
+    // page -> GPUI
+    ipcMain.on("send-to-gpui", (_event, text) => {
+      if (!counter.isClosed) counter.send({ type: "setMessage", text });
+    });
+  })
+  .catch((error) => {
+    console.error(error.stack ?? String(error));
+    app.exit(1);
   });
-  void page.loadFile(asset("index.html"));
-
-  const counter = gpui.openWindow(
-    "Counter",
-    { title: "GPUI (native)", width: 520, height: 360 },
-    { start: 0 },
-  );
-
-  // GPUI -> page
-  counter.on("event", (event) => page.webContents.send("gpui-event", event));
-  counter.on("closed", () => {
-    if (!page.isDestroyed()) page.webContents.send("gpui-event", { type: "closed" });
-  });
-
-  // page -> GPUI
-  ipcMain.on("send-to-gpui", (_event, text) => {
-    if (!counter.isClosed) counter.send({ type: "setMessage", text });
-  });
-});
 
 app.on("window-all-closed", () => {
   if (!SMOKE) app.quit();
