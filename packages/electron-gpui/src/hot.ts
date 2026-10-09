@@ -16,6 +16,8 @@ import { join } from "node:path";
  */
 export interface HotConfig {
   dir: string;
+  /** Fingerprint of the loaded addon; optional for older bundler plugins. */
+  buildId?: string;
 }
 
 /** The addon exports used for hot patching (dev builds of the SDK). */
@@ -48,7 +50,7 @@ const PATCH_FILE = /^patch-(\d+)\.json$/;
 
 /**
  * Protocol (all files in `config.dir`):
- * - the app writes `app.json` — `{ pid, anchor }` — so patches can be built for it;
+ * - the app writes `app.json` — `{ pid, anchor, buildId? }` — so patches can be built for it;
  * - the dev server writes `patch-<id>.json` — `{ target: { pid, anchor }, table }`,
  *   where `table` is a Subsecond jump table (older dev servers write the bare table);
  * - the app applies it and writes `result-<id>.json` — `{ ok, error? }`.
@@ -66,7 +68,7 @@ export function startHotClient(addon: HotAddon, config: HotConfig, onApplied?: (
   }
   const anchor = addon.hotAnchor();
   const appFile = join(dir, "app.json");
-  writeAtomic(appFile, JSON.stringify({ pid: process.pid, anchor }));
+  writeAtomic(appFile, JSON.stringify({ pid: process.pid, anchor, buildId: config.buildId }));
 
   const handled = new Set<string>();
   const applyPending = (name: string): void => {

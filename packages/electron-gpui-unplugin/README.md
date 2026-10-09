@@ -68,6 +68,8 @@ Rollup, Rolldown and Vite compute the path from each output chunk to the addon, 
 
 With hot reload, the plugin restarts the app by touching `**/electron-gpui-hot/*/rebuild-trigger`, which it adds to the bundle's watch files. A watch `include` filter also applies to those files: the Vite plugin extends `build.watch.include` for you, and with Rollup or Rolldown you need to add the pattern to `watch.include` yourself.
 
+Closing the bundler watcher closes the hot session and stops Electron when `electron: true`. Concurrent rebuilds share one restart, and patches wait until the running app has loaded the matching addon build.
+
 The plugin runs the `electron-gpui` CLI installed in your project directly, never through `npx`. It's meant for Node outputs such as Electron's main process, not browser bundles; Vite SSR asset emission is turned on automatically.
 
 Native builds and in-process hot patches support macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). `universal` is macOS-only. Development addons use content-addressed filenames and process-owned Windows copies so rebuilding cannot overwrite a loaded DLL. See the [platform prerequisites and window-option limitations](https://github.com/biw/electron-gpui#api).

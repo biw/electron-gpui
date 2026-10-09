@@ -26,6 +26,7 @@ export function resolveElectronBinary(projectDir: string): string {
 export class ElectronLauncher {
   #child: ChildProcess | undefined;
   #stopping: Promise<void> | undefined;
+  #request = 0;
 
   constructor(
     private readonly projectDir: string,
@@ -38,40 +39,79 @@ export class ElectronLauncher {
   }
 
   async restart(): Promise<void> {
-    await this.stop();
-    this.#start();
+    const request = ++this.#request;
+    await this.#stopChild();
+    if (request === this.#request) await this.#start();
   }
 
   async stop(): Promise<void> {
+    ++this.#request;
+    await this.#stopChild();
+  }
+
+  #stopChild(): Promise<void> {
+    if (this.#stopping) return this.#stopping;
     const child = this.#child;
-    if (!child) return;
+    if (!child) return Promise.resolve();
     this.#child = undefined;
-    this.#stopping ??= new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
-      child.once("exit", () => {
+    this.#stopping = new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error): void => {
         clearTimeout(timeout);
-        resolve();
-      });
-      child.kill("SIGTERM");
+        child.removeListener("exit", onExit);
+        child.removeListener("error", onError);
+        if (error) {
+          if (child.pid !== undefined && child.exitCode === null && child.signalCode === null)
+            this.#child = child;
+          reject(error);
+        } else resolve();
+      };
+      const onExit = (): void => finish();
+      const onError = (error: Error): void => finish(error);
+      const kill = (signal: NodeJS.Signals): void => {
+        try {
+          child.kill(signal);
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      const timeout = setTimeout(() => kill("SIGKILL"), 5000);
+      child.once("exit", onExit);
+      child.once("error", onError);
+      kill("SIGTERM");
     }).finally(() => {
       this.#stopping = undefined;
     });
-    await this.#stopping;
+    return this.#stopping;
   }
 
-  #start(): void {
-    const child = spawn(this.binary(), [this.projectDir, ...(this.options.args ?? [])], {
-      cwd: this.projectDir,
-      stdio: "inherit",
-      env: { ...process.env, ELECTRON_GPUI_DEV: "1" },
-    });
-    this.#child = child;
-    child.once("exit", (code, signal) => {
-      // The user quit the app (not a restart we asked for): stop watching too.
-      if (this.#child === child) {
-        this.#child = undefined;
-        process.exit(code ?? (signal ? 1 : 0));
-      }
+  #start(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(this.binary(), [this.projectDir, ...(this.options.args ?? [])], {
+        cwd: this.projectDir,
+        stdio: "inherit",
+        env: { ...process.env, ELECTRON_GPUI_DEV: "1" },
+      });
+      this.#child = child;
+      let spawned = false;
+      const onSpawn = (): void => {
+        spawned = true;
+        resolve();
+      };
+      child.once("spawn", onSpawn);
+      child.on("error", (error) => {
+        if (!spawned) {
+          child.removeListener("spawn", onSpawn);
+          if (this.#child === child) this.#child = undefined;
+          reject(error);
+        } else if (this.#child === child) console.error("electron-gpui:", error);
+      });
+      child.once("exit", (code, signal) => {
+        // The user quit the app (not a restart we asked for): stop watching too.
+        if (this.#child === child) {
+          this.#child = undefined;
+          process.exit(code ?? (signal ? 1 : 0));
+        }
+      });
     });
   }
 }

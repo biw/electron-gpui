@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   type Dirent,
   existsSync,
@@ -12,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { localDependencyDirs, type ResolvedOptions } from "./core.js";
 import { rustStructure } from "./rust-structure.js";
 
@@ -53,6 +55,7 @@ export function classifyChange(
 export interface AppInfo {
   pid: number;
   anchor: string;
+  buildId?: string;
 }
 
 function readApp(dir: string): AppInfo | undefined {
@@ -149,6 +152,9 @@ export class HotSession {
   #timer: NodeJS.Timeout | undefined;
   #queue: Promise<void> = Promise.resolve();
   #nextPatchId = 1;
+  #lifetime = new AbortController();
+  #buildId: string | undefined;
+  #replacedApp: AppInfo | undefined;
 
   constructor(
     private readonly options: ResolvedOptions,
@@ -197,15 +203,21 @@ export class HotSession {
   }
 
   /** Build the addon so it can be patched later, and remember the sources it was built from. */
-  async fatBuild(): Promise<void> {
+  async fatBuild(signal = this.#lifetime.signal): Promise<void> {
+    if (signal.aborted) return;
     const tool = await this.#ensureTool();
+    if (signal.aborted) return;
     const sources = this.#sources();
+    const replacedApp = readApp(this.dir);
     const code = await run(
       tool,
       ["fat", this.options.crateDir, this.options.builtAddon],
       this.options.crateDir,
     );
+    if (signal.aborted) return;
     if (code !== 0) throw new Error("electron-gpui: build failed");
+    this.#buildId = createHash("sha256").update(readFileSync(this.options.builtAddon)).digest("hex");
+    this.#replacedApp = replacedApp;
     this.dependencyDirs = localDependencyDirs(this.options.crateDir);
     if (this.#watchers.length > 0) this.#syncDependencyWatchers();
     this.#builtSources = sources;
@@ -232,6 +244,7 @@ export class HotSession {
   /** Start watching the crate and its local dependencies. Changes are handled one batch at a time. */
   start(): void {
     if (this.#watchers.length > 0) return;
+    if (this.#lifetime.signal.aborted) this.#lifetime = new AbortController();
     this.#watchers.push(
       watch(this.options.crateDir, { recursive: true }, (_event, name) =>
         this.#onFileEvent(this.options.crateDir, name),
@@ -289,7 +302,7 @@ export class HotSession {
   }
 
   #onFileEvent(dir: string, name: string | Buffer | null): void {
-    if (!name) return;
+    if (!name || this.#lifetime.signal.aborted) return;
     const relative = name.toString();
     const top = relative.split(path.sep)[0];
     if (
@@ -310,11 +323,17 @@ export class HotSession {
     this.#timer = setTimeout(() => {
       const files = [...this.#pending];
       this.#pending.clear();
-      this.#queue = this.#queue.then(() => this.#handle(files)).catch((error: unknown) => log(String(error)));
+      const signal = this.#lifetime.signal;
+      this.#queue = this.#queue
+        .then(() => this.#handle(files, signal))
+        .catch((error: unknown) => {
+          if (!signal.aborted) log(String(error));
+        });
     }, 80);
   }
 
   stop(): void {
+    this.#lifetime.abort();
     clearTimeout(this.#timer);
     clearInterval(this.#configurationTimer);
     this.#configurationTimer = undefined;
@@ -331,12 +350,14 @@ export class HotSession {
     return this.dependencyDirs.find((dir) => !path.relative(dir, file).startsWith(".."));
   }
 
-  async #handle(files: string[]): Promise<void> {
+  async #handle(files: string[], signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     // Only the views crate is recompiled into patches; other crates need a rebuild.
     const dependency = files.map((file) => this.#dependencyOf(file)).find((dir) => dir !== undefined);
     if (dependency) {
       return this.#fullReload(
         `${path.basename(dependency)} changed (only ${path.basename(this.options.crateDir)} can be hot-patched)`,
+        signal,
       );
     }
 
@@ -358,24 +379,39 @@ export class HotSession {
       .filter((reason) => reason !== undefined);
 
     if (reasons.length > 0) {
-      return this.#fullReload(`${reasons.join(", ")} changed in a way that can't be hot-patched`);
+      return this.#fullReload(`${reasons.join(", ")} changed in a way that can't be hot-patched`, signal);
     }
     const app = readApp(this.dir);
-    if (!app) return this.#fullReload("no running app to patch");
+    if (!app) return this.#fullReload("no running app to patch", signal);
+    // A full build replaces the symbol map before the bundler has restarted
+    // Electron. Never combine that map with the old process's anchor. Older
+    // clients have no fingerprint, so also remember the process a build replaced.
+    const wrongBuild =
+      app.buildId !== undefined
+        ? app.buildId !== this.#buildId
+        : this.#replacedApp !== undefined &&
+          app.pid === this.#replacedApp.pid &&
+          app.anchor === this.#replacedApp.anchor;
+    if (wrongBuild) return this.#fullReload("the running app hasn't loaded the rebuilt addon", signal);
 
     const started = performance.now();
     const tool = await this.#ensureTool();
+    if (signal.aborted) return;
     const pending = path.join(this.dir, "pending.json.tmp");
     const code = await run(
       tool,
       ["patch", this.options.crateDir, app.anchor, pending],
       this.options.crateDir,
     );
+    if (signal.aborted) {
+      rmSync(pending, { force: true });
+      return;
+    }
     if (code === EXIT_COMPILE_ERROR) {
       log("build failed; fix the errors above and save again");
       return;
     }
-    if (code !== 0) return this.#fullReload("the change couldn't be hot-patched");
+    if (code !== 0) return this.#fullReload("the change couldn't be hot-patched", signal);
 
     const id = this.#nextPatchId++;
     const resultFile = path.join(this.dir, `result-${id}.json`);
@@ -383,13 +419,19 @@ export class HotSession {
     rmSync(resultFile, { force: true });
     writePatch(pending, app);
     renameSync(pending, patchFile);
-    const result = await waitForJson<{ ok: boolean; error?: string }>(resultFile, 10_000);
-    rmSync(resultFile, { force: true });
-    // Unclaimed (the app is gone or hung): don't leave it for the next app.
-    rmSync(patchFile, { force: true });
+    let result: { ok: boolean; error?: string } | undefined;
+    try {
+      result = await waitForJson<typeof result>(resultFile, 10_000, signal);
+    } finally {
+      rmSync(resultFile, { force: true });
+      // Unclaimed (the app is gone or hung): don't leave it for the next app.
+      rmSync(patchFile, { force: true });
+    }
+    if (signal.aborted) return;
     if (!result?.ok) {
       return this.#fullReload(
         result ? `the app couldn't apply the patch: ${result.error}` : "the app didn't respond",
+        signal,
       );
     }
     for (const file of changed) {
@@ -403,14 +445,17 @@ export class HotSession {
     );
   }
 
-  async #fullReload(reason: string): Promise<void> {
+  async #fullReload(reason: string, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     log(`${reason}; rebuilding and restarting`);
     try {
-      await this.fatBuild();
+      await this.fatBuild(signal);
     } catch (error) {
-      log(`${error instanceof Error ? error.message : String(error)}; fix the errors above and save again`);
+      if (!signal.aborted)
+        log(`${error instanceof Error ? error.message : String(error)}; fix the errors above and save again`);
       return;
     }
+    if (signal.aborted) return;
     // The bundler watches this file: rebuilding the bundle restarts the app.
     writeFileSync(this.triggerFile, String(Date.now()));
   }
@@ -433,9 +478,9 @@ function safeReaddir(dir: string): Dirent[] {
   }
 }
 
-async function waitForJson<T>(file: string, timeoutMs: number): Promise<T | undefined> {
+async function waitForJson<T>(file: string, timeoutMs: number, signal: AbortSignal): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (!signal.aborted && Date.now() < deadline) {
     if (existsSync(file)) {
       try {
         return JSON.parse(readFileSync(file, "utf8")) as T;
@@ -443,7 +488,11 @@ async function waitForJson<T>(file: string, timeoutMs: number): Promise<T | unde
         // Partially written; retry.
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    try {
+      await delay(25, undefined, { signal });
+    } catch (error) {
+      if (!signal.aborted) throw error;
+    }
   }
   return undefined;
 }

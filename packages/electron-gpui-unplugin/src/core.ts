@@ -268,7 +268,7 @@ export const ADDON_PATH_PLACEHOLDER = "__ELECTRON_GPUI_ADDON_PATH__";
 export function addonModuleCode(relativePath: string, hotDir?: string, development = false): string {
   // In hot-reload dev builds, tell electron-gpui's runtime where to exchange patches.
   const hot = hotDir
-    ? `Object.defineProperty(addonModule.exports, "__electronGpuiHot", { value: { dir: ${JSON.stringify(hotDir)} } });\n`
+    ? `Object.defineProperty(addonModule.exports, "__electronGpuiHot", { value: { dir: ${JSON.stringify(hotDir)}, buildId: addonBuildId } });\n`
     : "";
   const copy = development
     ? `
@@ -286,19 +286,20 @@ if (process.platform === "win32") {
   }
   const directory = join(root, String(process.pid));
   mkdirSync(directory, { recursive: true });
-  const hash = createHash("sha256").update(readFileSync(addonPath)).digest("hex");
-  const copy = join(directory, hash + ".node");
+  const copy = join(directory, addonBuildId + ".node");
   if (!existsSync(copy)) copyFileSync(addonPath, copy);
   addonPath = copy;
 }
 `
     : "";
   return `import { dirname, join } from "node:path";
-${development ? 'import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { createHash } from "node:crypto";\n' : ""}
+${development ? 'import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\n' : hotDir ? 'import { readFileSync } from "node:fs";\n' : ""}
+${development || hotDir ? 'import { createHash } from "node:crypto";\n' : ""}
 import { fileURLToPath } from "node:url";
 const bundleDir = typeof __dirname === "string" ? __dirname : dirname(fileURLToPath(import.meta.url));
 const addonModule = { exports: {} };
 let addonPath = join(bundleDir, ${JSON.stringify(relativePath)});
+${development || hotDir ? 'const addonBuildId = createHash("sha256").update(readFileSync(addonPath)).digest("hex");\n' : ""}
 ${copy}process.dlopen(addonModule, addonPath);
 ${hot}export default addonModule.exports;
 `;

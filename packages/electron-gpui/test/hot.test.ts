@@ -47,6 +47,15 @@ describe("hotConfigOf", () => {
 });
 
 describe("startHotClient", () => {
+  it("announces the loaded addon fingerprint when the plugin provides it", () => {
+    stop = startHotClient(fakeAddon(), { dir, buildId: "addon-fingerprint" });
+    expect(JSON.parse(readFileSync(join(dir, "app.json"), "utf8"))).toEqual({
+      pid: process.pid,
+      anchor: "0x1234",
+      buildId: "addon-fingerprint",
+    });
+  });
+
   it("registers the app, applies patches and reports success", async () => {
     const addon = fakeAddon();
     stop = startHotClient(addon, { dir });

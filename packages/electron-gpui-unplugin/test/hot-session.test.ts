@@ -23,6 +23,7 @@ it("processes an edit saved while the previous patch is being acknowledged", asy
   writeFileSync(path.join(tool, "Cargo.toml"), "[package]\nname = 'electron-gpui-hotpatch'\n");
   const original = "struct Counter { count: i64 }\nfn value() -> usize { 1 }\n";
   writeFileSync(source, original);
+  writeFileSync(path.join(crate, "index.node"), "fixture addon");
   vi.mocked(execFileSync).mockReturnValue(
     JSON.stringify({
       target_directory: path.join(directory, "target"),
@@ -94,6 +95,7 @@ it.each(["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml"
     if (!created) mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(path.join(crate, "Cargo.toml"), "[package]\nname = 'views'\n");
     writeFileSync(path.join(crate, "src/lib.rs"), "fn value() { 1 }\n");
+    writeFileSync(path.join(crate, "index.node"), "fixture addon");
     writeFileSync(path.join(tool, "Cargo.toml"), "[package]\nname = 'electron-gpui-hotpatch'\n");
     if (!created) writeFileSync(file, "original");
     vi.mocked(execFileSync).mockReturnValue(
@@ -153,6 +155,7 @@ it("watches a path dependency added while the session is running", async () => {
   const manifest = path.join(crate, "Cargo.toml");
   writeFileSync(manifest, "original");
   writeFileSync(path.join(crate, "src/lib.rs"), "fn value() { 1 }\n");
+  writeFileSync(path.join(crate, "index.node"), "fixture addon");
   writeFileSync(path.join(tool, "Cargo.toml"), "tool");
   const dependencySource = path.join(dependency, "src/lib.rs");
   writeFileSync(dependencySource, "pub const VALUE: usize = 1;\n");

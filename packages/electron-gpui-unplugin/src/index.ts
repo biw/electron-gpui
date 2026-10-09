@@ -48,6 +48,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
     let watchMode = false;
     let launcher: ElectronLauncher | undefined;
     let restartTimer: NodeJS.Timeout | undefined;
+    let watcherClosed = false;
     let hot: HotSession | undefined;
     let hotChecked = false;
     let dependencyDirs: string[] | undefined;
@@ -78,15 +79,23 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
 
     // Restart once per rebuild, after every output of that build is written.
     function scheduleLaunch(): void {
-      if (!rawOptions?.electron || !watchMode) return;
+      if (watcherClosed || !rawOptions?.electron || !watchMode) return;
       launcher ??= new ElectronLauncher(
         options.projectDir,
         typeof rawOptions.electron === "object" ? rawOptions.electron : {},
       );
       clearTimeout(restartTimer);
       restartTimer = setTimeout(() => {
-        launcher?.restart().catch((error: unknown) => console.error("electron-gpui:", error));
+        if (!watcherClosed)
+          launcher?.restart().catch((error: unknown) => console.error("electron-gpui:", error));
       }, 50);
+    }
+
+    async function closeWatcher(): Promise<void> {
+      watcherClosed = true;
+      clearTimeout(restartTimer);
+      hot?.stop();
+      await launcher?.stop();
     }
 
     function readAddon(): Buffer {
@@ -111,6 +120,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
       enforce: "pre",
 
       async buildStart() {
+        if (watcherClosed) return;
         // Rollup and Rolldown report watch mode here; Vite in configResolved.
         const meta = (this as { meta?: { watchMode?: boolean } }).meta;
         if (meta?.watchMode) watchMode = true;
@@ -123,12 +133,14 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
           // rebuilds (restarting the app) when the session touches the trigger.
           if (needsBuild) {
             await session.fatBuild();
+            if (watcherClosed) return;
             session.start();
           }
           needsBuild = false;
           this.addWatchFile(session.triggerFile);
         } else {
           if (options.build && needsBuild) await ensureBuild(options);
+          if (watcherClosed) return;
           needsBuild = false;
           // unplugin's esbuild adapter only takes watch files from resolve/load/transform.
           if (!isEsbuild) {
@@ -191,8 +203,8 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
         }
       },
 
-      rollup: { renderChunk },
-      rolldown: { renderChunk },
+      rollup: { renderChunk, closeWatcher },
+      rolldown: { renderChunk, closeWatcher },
       vite: {
         // Electron's main process is a Node (SSR-style) build; keep emitted assets.
         config(config) {
@@ -212,6 +224,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
           watchMode = Boolean(config.build.watch);
         },
         renderChunk,
+        closeWatcher,
       },
 
       webpack(compiler) {

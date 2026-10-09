@@ -116,15 +116,18 @@ describe("Windows development loading", () => {
     const originalDlopen = process.dlopen.bind(process);
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const loaded: string[] = [];
-    process.dlopen = ((_target: unknown, file: string) => {
+    const configs: { dir: string; buildId: string }[] = [];
+    process.dlopen = ((target: { exports: object }, file: string) => {
       loaded.push(file);
+      target.exports = {};
     }) as typeof process.dlopen;
     try {
       const build = async (version: string) => {
         writeFileSync(path.join(project, "addon.node"), version);
         const module = path.join(project, `module-${version}.mjs`);
-        writeFileSync(module, addonModuleCode("addon.node", undefined, true));
-        await import(pathToFileURL(module).href);
+        writeFileSync(module, addonModuleCode("addon.node", project, true));
+        const addon = (await import(pathToFileURL(module).href)).default;
+        configs.push(addon.__electronGpuiHot);
       };
       await build("first");
       await build("second");
@@ -132,6 +135,10 @@ describe("Windows development loading", () => {
       expect(path.dirname(loaded[0]!)).toBe(path.join(tmpdir(), "electron-gpui-addons", String(process.pid)));
       expect(readFileSync(loaded[0]!, "utf8")).toBe("first");
       expect(readFileSync(loaded[1]!, "utf8")).toBe("second");
+      expect(configs[0]?.dir).toBe(project);
+      expect(configs[0]?.buildId).toBe(path.basename(loaded[0]!, ".node"));
+      expect(configs[1]?.buildId).toBe(path.basename(loaded[1]!, ".node"));
+      expect(configs[0]?.buildId).not.toBe(configs[1]?.buildId);
     } finally {
       process.dlopen = originalDlopen;
       Object.defineProperty(process, "platform", descriptor);

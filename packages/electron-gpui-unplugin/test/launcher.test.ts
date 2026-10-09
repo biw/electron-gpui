@@ -32,17 +32,21 @@ async function waitFor(condition: () => boolean): Promise<void> {
 describe("ElectronLauncher", () => {
   it("starts the app, then replaces it on restart", async () => {
     const launcher = new ElectronLauncher(project, {}, () => process.execPath);
-    await launcher.restart();
-    await waitFor(() => launches().length === 1);
-    const [first] = launches();
-    expect(first).toMatch(/ 1$/); // ELECTRON_GPUI_DEV=1
+    try {
+      await launcher.restart();
+      await waitFor(() => launches().length === 1);
+      const [first] = launches();
+      expect(first).toMatch(/ 1$/); // ELECTRON_GPUI_DEV=1
 
-    await launcher.restart();
-    await waitFor(() => launches().length === 2);
-    const firstPid = Number(first?.split(" ")[0]);
-    expect(() => process.kill(firstPid, 0)).toThrow(); // old process is gone
+      await launcher.restart();
+      await waitFor(() => launches().length === 2);
+      const firstPid = Number(first?.split(" ")[0]);
+      expect(() => process.kill(firstPid, 0)).toThrow(); // old process is gone
 
-    await launcher.stop();
-    expect(launcher.running).toBe(false);
+      await launcher.stop();
+      expect(launcher.running).toBe(false);
+    } finally {
+      await launcher.stop();
+    }
   });
 });
