@@ -8,7 +8,7 @@
 // counter's GPUI action registrations) a second time.
 // The source files are always restored.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,10 +19,15 @@ const source = join(here, "native/src/lib.rs");
 const themeSource = join(here, "theme/src/lib.rs");
 const manifestSource = join(here, "native/Cargo.toml");
 const workspaceManifest = join(here, "../../Cargo.toml");
+const workspaceLock = join(here, "../../Cargo.lock");
 const originals = new Map(
-  [source, themeSource, manifestSource, workspaceManifest].map((file) => [file, readFileSync(file, "utf8")]),
+  [source, themeSource, manifestSource, workspaceManifest, workspaceLock].map((file) => [
+    file,
+    readFileSync(file, "utf8"),
+  ]),
 );
 const status = join(tmpdir(), `electron-gpui-hot-smoke-${process.pid}.json`);
+const extraDependency = mkdtempSync(join(tmpdir(), "electron-gpui-hot-dependency-"));
 const appPids = new Set();
 let output = "";
 const deadline = (ms) => Date.now() + ms;
@@ -173,6 +178,32 @@ try {
   console.log(
     `[hot-smoke] workspace manifest restarted the app (${configured.pid} -> ${workspaceConfigured.pid})`,
   );
+  mkdirSync(join(extraDependency, "src"));
+  writeFileSync(
+    join(extraDependency, "Cargo.toml"),
+    '[package]\nname = "hot-smoke-extra"\nversion = "0.0.0"\nedition = "2024"\n[workspace]\n',
+  );
+  const extraSource = join(extraDependency, "src/lib.rs");
+  writeFileSync(extraSource, 'pub const VALUE: &str = "one";\n');
+  edit(
+    (s) =>
+      s +
+      `\n[dependencies.hot-smoke-extra]\npath = ${JSON.stringify(extraDependency.replaceAll("\\", "/"))}\n`,
+    manifestSource,
+  );
+  edit((s) => s.replace(pong(5), pong(5).replace(" })", ', "extra": hot_smoke_extra::VALUE })')));
+  const added = await waitFor("a newly added path dependency", (s) => s.pong.extra === "one", 5 * 60_000);
+  if (added.pid === workspaceConfigured.pid) throw new Error("new dependency did not restart the app");
+  edit((s) => s.replace('"one"', '"two"'), extraSource);
+  const edited = await waitFor(
+    "an edit to the newly added dependency",
+    (s) => s.pong.extra === "two",
+    5 * 60_000,
+  );
+  if (edited.pid === added.pid) throw new Error("new dependency's source edit did not restart the app");
+  console.log(
+    `[hot-smoke] added a path dependency and rebuilt after editing it (${added.pid} -> ${edited.pid})`,
+  );
   console.log("[hot-smoke] PASS");
 } catch (error) {
   failed = true;
@@ -186,5 +217,6 @@ try {
   stopTree(dev, "SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, 2000));
   stopTree(dev, "SIGKILL");
+  rmSync(extraDependency, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

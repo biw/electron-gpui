@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { ResolvedOptions } from "./core.js";
+import { localDependencyDirs, type ResolvedOptions } from "./core.js";
 import { rustStructure } from "./rust-structure.js";
 
 const log = (message: string): void => console.log(`[electron-gpui] ${message}`);
@@ -142,7 +142,9 @@ export class HotSession {
   /** Sources as of the last build or patch, to skip saves that change nothing. */
   #liveSources = new Map<string, string>();
   #watchers: FSWatcher[] = [];
-  #configurationWatchDirs = new Set<string>();
+  #dependencyWatchers = new Map<string, FSWatcher>();
+  #configurationSources = new Map<string, string | undefined>();
+  #configurationTimer: NodeJS.Timeout | undefined;
   #pending = new Set<string>();
   #timer: NodeJS.Timeout | undefined;
   #queue: Promise<void> = Promise.resolve();
@@ -151,7 +153,7 @@ export class HotSession {
   constructor(
     private readonly options: ResolvedOptions,
     /** Local crates the views crate depends on: changes there rebuild and restart. */
-    private readonly dependencyDirs: string[] = [],
+    private dependencyDirs: string[] = [],
   ) {
     this.#layout = crateLayout(options.crateDir);
     this.#configurationFiles = configurationFiles(options.crateDir, this.#layout.workspaceDir);
@@ -204,6 +206,8 @@ export class HotSession {
       this.options.crateDir,
     );
     if (code !== 0) throw new Error("electron-gpui: build failed");
+    this.dependencyDirs = localDependencyDirs(this.options.crateDir);
+    if (this.#watchers.length > 0) this.#syncDependencyWatchers();
     this.#builtSources = sources;
     this.#liveSources = new Map(sources);
   }
@@ -219,7 +223,8 @@ export class HotSession {
     };
     walk(path.join(this.options.crateDir, "src"));
     for (const file of this.#configurationFiles) {
-      if (existsSync(file)) sources.set(file, readFileSync(file, "utf8"));
+      const source = this.#readConfiguration(file);
+      if (source !== undefined) sources.set(file, source);
     }
     return sources;
   }
@@ -227,16 +232,27 @@ export class HotSession {
   /** Start watching the crate and its local dependencies. Changes are handled one batch at a time. */
   start(): void {
     if (this.#watchers.length > 0) return;
-    for (const dir of [this.options.crateDir, ...this.dependencyDirs]) {
-      this.#watchers.push(watch(dir, { recursive: true }, (_event, name) => this.#onFileEvent(dir, name)));
-    }
-    // A member crate inherits its workspace's manifest, lockfile and Cargo
-    // configuration. Watch just those parent directories, not the entire
-    // workspace (which may contain the JS build output and Cargo target dir).
-    for (const dir of new Set([...this.#configurationFiles].map((file) => path.dirname(file)))) {
-      this.#watchConfigurationDir(dir);
-      if (path.basename(dir) === ".cargo") this.#watchConfigurationDir(path.dirname(dir));
-    }
+    this.#watchers.push(
+      watch(this.options.crateDir, { recursive: true }, (_event, name) =>
+        this.#onFileEvent(this.options.crateDir, name),
+      ),
+    );
+    this.#syncDependencyWatchers();
+    // Directory events can be coalesced or missed on macOS, including atomic
+    // saves and configuration directories created after watching starts. Poll
+    // only this small, explicit set; ordinary Rust sources remain event-driven.
+    this.#configurationSources = new Map(
+      [...this.#configurationFiles].map((file) => [file, this.#readConfiguration(file)]),
+    );
+    this.#configurationTimer = setInterval(() => {
+      for (const file of this.#configurationFiles) {
+        const source = this.#readConfiguration(file);
+        if (source === this.#configurationSources.get(file)) continue;
+        this.#configurationSources.set(file, source);
+        this.#onFileEvent(path.dirname(file), path.basename(file));
+      }
+    }, 250);
+    this.#configurationTimer.unref();
     // Edits made during the initial build happened before watchers were attached.
     const current = this.#sources();
     for (const file of new Set([...this.#liveSources.keys(), ...current.keys()])) {
@@ -246,23 +262,30 @@ export class HotSession {
     }
   }
 
-  #watchConfigurationDir(dir: string): void {
-    if (dir === this.options.crateDir || this.#configurationWatchDirs.has(dir) || !existsSync(dir)) return;
-    this.#configurationWatchDirs.add(dir);
-    this.#watchers.push(
-      watch(dir, (_event, name) => {
-        if (!name) return;
-        const file = path.join(dir, name.toString());
-        if (this.#configurationFiles.has(file)) this.#onFileEvent(dir, name);
-        // A Cargo configuration directory may be created after the initial build.
-        if (name.toString() === ".cargo" && existsSync(file)) {
-          this.#watchConfigurationDir(file);
-          for (const config of ["config", "config.toml"]) {
-            if (existsSync(path.join(file, config))) this.#onFileEvent(file, config);
-          }
-        }
-      }),
-    );
+  #syncDependencyWatchers(): void {
+    const directories = new Set(this.dependencyDirs);
+    for (const [dir, watcher] of this.#dependencyWatchers) {
+      if (!directories.has(dir)) {
+        watcher.close();
+        this.#dependencyWatchers.delete(dir);
+      }
+    }
+    for (const dir of directories) {
+      if (dir === this.options.crateDir || this.#dependencyWatchers.has(dir)) continue;
+      this.#dependencyWatchers.set(
+        dir,
+        watch(dir, { recursive: true }, (_event, name) => this.#onFileEvent(dir, name)),
+      );
+    }
+  }
+
+  #readConfiguration(file: string): string | undefined {
+    try {
+      return readFileSync(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`reading ${file}: ${String(error)}`);
+      return undefined;
+    }
   }
 
   #onFileEvent(dir: string, name: string | Buffer | null): void {
@@ -278,13 +301,10 @@ export class HotSession {
       return;
     }
     const file = path.join(dir, relative);
-    if (relative === ".cargo" && existsSync(file)) {
-      for (const config of ["config", "config.toml"]) {
-        if (existsSync(path.join(file, config))) this.#onFileEvent(file, config);
-      }
-    }
     if (!relative.endsWith(".rs") && !FULL_REBUILD_FILES.has(relative) && !this.#configurationFiles.has(file))
       return;
+    if (this.#configurationFiles.has(file))
+      this.#configurationSources.set(file, this.#readConfiguration(file));
     this.#pending.add(file);
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
@@ -296,10 +316,14 @@ export class HotSession {
 
   stop(): void {
     clearTimeout(this.#timer);
+    clearInterval(this.#configurationTimer);
+    this.#configurationTimer = undefined;
+    this.#configurationSources.clear();
     this.#pending.clear();
     for (const watcher of this.#watchers) watcher.close();
+    for (const watcher of this.#dependencyWatchers.values()) watcher.close();
+    this.#dependencyWatchers.clear();
     this.#watchers = [];
-    this.#configurationWatchDirs.clear();
   }
 
   /** The local dependency crate containing `file`, if any. */

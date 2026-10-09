@@ -142,3 +142,86 @@ it.each(["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml"
     }
   },
 );
+
+it("watches a path dependency added while the session is running", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "electron-gpui-added-dependency-"));
+  const crate = path.join(directory, "member");
+  const dependency = path.join(directory, "new-dependency");
+  const sdk = path.join(directory, "sdk/electron-gpui");
+  const tool = path.join(directory, "sdk/electron-gpui-hotpatch");
+  for (const dir of [crate, dependency, sdk, tool]) mkdirSync(path.join(dir, "src"), { recursive: true });
+  const manifest = path.join(crate, "Cargo.toml");
+  writeFileSync(manifest, "original");
+  writeFileSync(path.join(crate, "src/lib.rs"), "fn value() { 1 }\n");
+  writeFileSync(path.join(tool, "Cargo.toml"), "tool");
+  const dependencySource = path.join(dependency, "src/lib.rs");
+  writeFileSync(dependencySource, "pub const VALUE: usize = 1;\n");
+  let added = false;
+  vi.mocked(execFileSync).mockImplementation(() =>
+    JSON.stringify({
+      target_directory: path.join(directory, "target"),
+      workspace_root: directory,
+      packages: [
+        {
+          id: "views",
+          name: "views",
+          source: null,
+          manifest_path: manifest,
+          targets: [{ name: "views", kind: ["cdylib"] }],
+        },
+        {
+          id: "sdk",
+          name: "electron-gpui",
+          source: null,
+          manifest_path: path.join(sdk, "Cargo.toml"),
+          targets: [],
+        },
+        {
+          id: "new",
+          name: "new-dependency",
+          source: null,
+          manifest_path: path.join(dependency, "Cargo.toml"),
+          targets: [],
+        },
+      ],
+      resolve: { nodes: [{ id: "views", deps: added ? [{ pkg: "new" }] : [] }] },
+    }),
+  );
+  vi.mocked(spawn).mockImplementation(() => {
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    queueMicrotask(() => child.emit("exit", 0));
+    return child;
+  });
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  const session = new HotSession({
+    projectDir: directory,
+    crateDir: crate,
+    build: true,
+    release: false,
+    universal: false,
+    assetFileName: "views.node",
+    builtAddon: path.join(crate, "index.node"),
+  });
+  try {
+    await session.fatBuild();
+    session.start();
+    added = true;
+    writeFileSync(manifest, "added path dependency");
+    await vi.waitFor(() => expect(readFileSync(session.triggerFile, "utf8")).not.toBe(""), { timeout: 5000 });
+    writeFileSync(session.triggerFile, "");
+    vi.mocked(spawn).mockClear();
+    writeFileSync(dependencySource, "pub const VALUE: usize = 2;\n");
+    await vi.waitFor(() => expect(readFileSync(session.triggerFile, "utf8")).not.toBe(""), { timeout: 5000 });
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawn).mock.calls[0]?.[1]?.[0]).toBe("fat");
+    session.stop();
+    vi.mocked(spawn).mockClear();
+    writeFileSync(manifest, "edited after stop");
+    writeFileSync(dependencySource, "pub const VALUE: usize = 3;\n");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  } finally {
+    session.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
