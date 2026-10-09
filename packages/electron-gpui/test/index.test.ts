@@ -97,6 +97,49 @@ describe("createGpui", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("contains a poisoned runtime's polling error after a caught native panic", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    vi.useFakeTimers();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cleared = vi.spyOn(globalThis, "clearInterval");
+    const error = new Error("native panic in openWindow; GPUI is disabled until relaunch");
+    let poisoned = false;
+    try {
+      const pollEvents = vi.fn(() => {
+        if (poisoned) throw error;
+      });
+      const { addon } = fakeAddon({
+        pollEvents,
+        openWindow: vi.fn(() => {
+          poisoned = true;
+          throw error;
+        }),
+      });
+      const gpui = createGpui(addon, { app: null });
+      expect(() => gpui.openWindow("PanickingView")).toThrow(error);
+      const hostCallback = vi.fn();
+      setTimeout(hostCallback, 100);
+      expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+      expect(pollEvents).toHaveBeenCalledTimes(1);
+      expect(reported).toHaveBeenCalledExactlyOnceWith(
+        "electron-gpui: stopped Linux event polling after a native error",
+        error,
+      );
+      expect(cleared).toHaveBeenCalledTimes(1);
+      expect(hostCallback).toHaveBeenCalledTimes(1);
+      gpui.shutdown();
+      gpui.shutdown();
+      expect(cleared).toHaveBeenCalledTimes(1);
+      expect(addon.shutdown).toHaveBeenCalledTimes(1);
+    } finally {
+      _resetForTests();
+      vi.useRealTimers();
+      Object.defineProperty(process, "platform", descriptor);
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("GpuiWindow", () => {

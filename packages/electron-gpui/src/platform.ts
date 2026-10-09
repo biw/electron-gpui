@@ -21,11 +21,26 @@ export function nativeArtifact(messages: string, targetName: string): string {
 
 /** Linux's calloop must be driven on the same main thread as Electron. */
 export function startEventPump(poll: () => void, hasWindows: () => boolean) {
-  const timer = setInterval(poll, 8);
+  let stopped = false;
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+  const timer = setInterval(() => {
+    if (stopped) return;
+    try {
+      poll();
+    } catch (error) {
+      stop();
+      console.error("electron-gpui: stopped Linux event polling after a native error", error);
+    }
+  }, 8);
   const updateReference = (): void => {
+    if (stopped) return;
     if (hasWindows()) timer.ref();
     else timer.unref();
   };
   updateReference();
-  return { updateReference, stop: () => clearInterval(timer) };
+  return { updateReference, stop };
 }

@@ -55,6 +55,12 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
     let emittedAddon = options.assetFileName;
     let generatedModule: string | undefined;
 
+    function developmentAddon(): boolean {
+      // webpack and esbuild have no common watch-mode signal. Protect all of
+      // their debug builds, including esbuild context.rebuild() calls.
+      return !options.release && (watchMode || meta.framework === "webpack" || isEsbuild);
+    }
+
     /** Local crates the views crate depends on (watch mode only). */
     function localDependencies(): string[] {
       dependencyDirs ??= watchMode ? localDependencyDirs(options.crateDir) : [];
@@ -150,14 +156,12 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
           }
         }
         const source = readAddon();
-        emittedAddon =
-          watchMode && !options.release
-            ? developmentAsset(options.assetFileName, source)
-            : options.assetFileName;
+        const development = developmentAddon();
+        emittedAddon = development ? developmentAsset(options.assetFileName, source) : options.assetFileName;
         if (generatedModule) {
           writeFileSync(
             generatedModule,
-            addonModuleCode(path.posix.basename(emittedAddon), undefined, watchMode && !options.release),
+            addonModuleCode(path.posix.basename(emittedAddon), undefined, development),
           );
         }
 
@@ -188,7 +192,7 @@ export const electronGpui = /* #__PURE__ */ createUnplugin<ElectronGpuiOptions |
         return addonModuleCode(
           isRollupFamily ? ADDON_PATH_PLACEHOLDER : path.posix.basename(emittedAddon),
           hot?.dir,
-          watchMode && !options.release,
+          developmentAddon(),
         );
       },
 

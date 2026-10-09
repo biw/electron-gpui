@@ -74,6 +74,8 @@ The plugin runs the `electron-gpui` CLI installed in your project directly, neve
 
 Native builds and in-process hot patches support macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). `universal` is macOS-only. Development addons use content-addressed filenames and process-owned Windows copies so rebuilding cannot overwrite a loaded DLL. See the [platform prerequisites and window-option limitations](https://github.com/biw/electron-gpui#api).
 
+Webpack and esbuild apply this addon protection to every debug build, including standalone builds and `context.rebuild()`, because their adapters expose no common watch-mode signal. Release builds retain the configured addon filename and load it directly.
+
 ## License
 
 MIT

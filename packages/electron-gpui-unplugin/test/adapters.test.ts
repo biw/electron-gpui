@@ -40,7 +40,7 @@ afterEach(() => {
   rmSync(project, { recursive: true, force: true });
 });
 
-const options = () => ({ cwd: project, build: false });
+const options = () => ({ cwd: project, build: false, release: true });
 
 async function loadEsm(file: string): Promise<{ loadedFrom: string }> {
   return (await import(`${pathToFileURL(file).href}?t=${Date.now()}`)).default;

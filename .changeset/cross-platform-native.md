@@ -9,4 +9,6 @@ Close development sessions with their bundler watchers, coalesce Electron restar
 
 Print portable scaffold loading examples and quote crate paths containing spaces, apostrophes, or URL characters.
 
+Protect webpack and esbuild debug addons across Windows rebuilds, and stop Linux event polling after a native failure while reporting the error once.
+
 Restart development apps for layout attributes, type aliases, constants, function signatures, registration changes and inherited Cargo workspace configuration. Keep newly added path dependencies watched, detect configuration saves reliably on macOS, keep ordinary function-body edits patchable and restrict Electron 30's Wayland import repair to the addon and its graphics driver dependency graph.
