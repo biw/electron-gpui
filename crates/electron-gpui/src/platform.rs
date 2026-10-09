@@ -13,6 +13,9 @@ pub(crate) type EmbeddedPlatform = gpui_linux::LinuxPlatform;
 compile_error!("electron-gpui supports macOS, Windows MSVC, and Linux GNU");
 
 pub(crate) fn new() -> Result<EmbeddedPlatform> {
+    #[cfg(target_os = "linux")]
+    prepare_wayland_libraries()?;
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         Ok(EmbeddedPlatform::new_embedded())
@@ -22,6 +25,49 @@ pub(crate) fn new() -> Result<EmbeddedPlatform> {
         EmbeddedPlatform::new_embedded()
             .map_err(|err| Error::from_reason(format!("initializing Windows GPUI: {err:#}")))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_wayland_libraries() -> Result<()> {
+    // Older Electron releases export their statically linked Wayland functions.
+    // System libwayland objects must not call those functions with their own
+    // private display/proxy structures. Load the client's dependency group with
+    // deep binding before wayland-rs opens its handles, and retain it for the
+    // lifetime of the process, like the embedded GPUI runtime itself.
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("WAYLAND_SOCKET").is_none()
+    {
+        return Ok(());
+    }
+    static LOADED: std::sync::OnceLock<std::result::Result<(), String>> =
+        std::sync::OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            for library in [c"libwayland-client.so.0", c"libwayland-cursor.so.0"] {
+                // Linux GNU/glibc is the supported Linux target. RTLD_DEEPBIND
+                // gives each library's dependency group priority over Electron.
+                let handle = unsafe {
+                    libc::dlopen(
+                        library.as_ptr(),
+                        libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_DEEPBIND,
+                    )
+                };
+                if handle.is_null() {
+                    let error = unsafe { libc::dlerror() };
+                    let reason = if error.is_null() {
+                        "unknown dynamic loader error".into()
+                    } else {
+                        unsafe { std::ffi::CStr::from_ptr(error) }
+                            .to_string_lossy()
+                            .into_owned()
+                    };
+                    return Err(format!("loading {}: {reason}", library.to_string_lossy()));
+                }
+            }
+            Ok(())
+        })
+        .as_ref()
+        .map_err(|error| Error::from_reason(error.clone()))
+        .copied()
 }
 
 pub(crate) fn poll(platform: &EmbeddedPlatform) -> Result<()> {
