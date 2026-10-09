@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { ResolvedOptions } from "./core.js";
+import { rustStructure } from "./rust-structure.js";
 
 const log = (message: string): void => console.log(`[electron-gpui] ${message}`);
 
@@ -30,48 +31,9 @@ export type ChangeKind = "hot" | "full";
 /** Files whose changes always need a full rebuild and restart. */
 const FULL_REBUILD_FILES = new Set(["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml"]);
 
-/**
- * Struct, enum and union definitions in a Rust source file, as text keyed by
- * name. Subsecond can't patch code whose types change layout, so any change to
- * these needs a restart. Deliberately simple: brace matching ignores strings and
- * comments, which at worst makes a change look structural and restart.
- */
-export function typeDefinitions(source: string): Map<string, string> {
-  const definitions = new Map<string, string>();
-  const pattern = /\b(struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
-    let end = match.index + match[0].length;
-    let depth = 0;
-    for (; end < source.length; end++) {
-      const ch = source[end];
-      if (ch === "{" || ch === "(") depth++;
-      else if (ch === "}" || ch === ")") {
-        depth--;
-        if (depth === 0) {
-          end++;
-          break;
-        }
-      } else if (ch === ";" && depth === 0) {
-        end++;
-        break;
-      }
-    }
-    const key = `${match[1]} ${match[2]}`;
-    definitions.set(
-      key,
-      `${definitions.get(key) ?? ""}${source.slice(match.index, end).replace(/\s+/g, " ")}`,
-    );
-  }
-  return definitions;
-}
-
-/** Whether `next` changes any type definition in `previous`. */
+/** Whether an edit changes layouts, function signatures, or other Rust items. */
 export function typesChanged(previous: string, next: string): boolean {
-  const before = typeDefinitions(previous);
-  const after = typeDefinitions(next);
-  if (before.size !== after.size) return true;
-  for (const [name, text] of before) if (after.get(name) !== text) return true;
-  return false;
+  return rustStructure(previous) !== rustStructure(next);
 }
 
 export function classifyChange(
@@ -113,6 +75,7 @@ function run(command: string, args: string[], cwd: string): Promise<number> {
 
 interface CrateLayout {
   targetDir: string;
+  workspaceDir: string;
   libName: string;
   /** The SDK's `electron-gpui-hotpatch` crate, next to the SDK crate. */
   toolManifest: string | undefined;
@@ -128,6 +91,7 @@ function crateLayout(crateDir: string): CrateLayout {
     }),
   ) as {
     target_directory: string;
+    workspace_root: string;
     packages: { name: string; manifest_path: string; targets: { name: string; kind: string[] }[] }[];
   };
   const own = metadata.packages.find((p) => path.resolve(p.manifest_path) === path.resolve(manifest));
@@ -138,9 +102,25 @@ function crateLayout(crateDir: string): CrateLayout {
     sdk && path.join(path.dirname(sdk.manifest_path), "..", "electron-gpui-hotpatch", "Cargo.toml");
   return {
     targetDir: metadata.target_directory,
+    workspaceDir: metadata.workspace_root,
     libName: lib.name.replaceAll("-", "_"),
     toolManifest: toolManifest && existsSync(toolManifest) ? toolManifest : undefined,
   };
+}
+
+function configurationFiles(crateDir: string, workspaceDir: string): Set<string> {
+  const files = new Set<string>();
+  for (const dir of new Set([crateDir, workspaceDir])) {
+    for (const name of ["Cargo.toml", "Cargo.lock"]) files.add(path.join(dir, name));
+  }
+  // Cargo and rustup search the member's ancestors for local configuration.
+  for (let dir = crateDir; ; dir = path.dirname(dir)) {
+    for (const name of ["rust-toolchain.toml", "rust-toolchain", ".cargo/config", ".cargo/config.toml"])
+      files.add(path.join(dir, name));
+    if (dir === workspaceDir || dir === path.dirname(dir)) break;
+  }
+  files.add(path.join(crateDir, "build.rs"));
+  return files;
 }
 
 /**
@@ -154,6 +134,7 @@ export class HotSession {
   /** Touching this makes the bundler rebuild (it's in the bundle's watch list). */
   readonly triggerFile: string;
   readonly #layout: CrateLayout;
+  readonly #configurationFiles: Set<string>;
   #tool: string | undefined;
   /** Sources of the running full build: patches are built against it, so type
    * definitions are compared with these. */
@@ -161,6 +142,7 @@ export class HotSession {
   /** Sources as of the last build or patch, to skip saves that change nothing. */
   #liveSources = new Map<string, string>();
   #watchers: FSWatcher[] = [];
+  #configurationWatchDirs = new Set<string>();
   #pending = new Set<string>();
   #timer: NodeJS.Timeout | undefined;
   #queue: Promise<void> = Promise.resolve();
@@ -172,6 +154,7 @@ export class HotSession {
     private readonly dependencyDirs: string[] = [],
   ) {
     this.#layout = crateLayout(options.crateDir);
+    this.#configurationFiles = configurationFiles(options.crateDir, this.#layout.workspaceDir);
     const base = path.join(this.#layout.targetDir, "electron-gpui-hot", this.#layout.libName);
     this.dir = path.join(base, "live");
     this.triggerFile = path.join(base, "rebuild-trigger");
@@ -235,8 +218,7 @@ export class HotSession {
       }
     };
     walk(path.join(this.options.crateDir, "src"));
-    for (const name of FULL_REBUILD_FILES) {
-      const file = path.join(this.options.crateDir, name);
+    for (const file of this.#configurationFiles) {
       if (existsSync(file)) sources.set(file, readFileSync(file, "utf8"));
     }
     return sources;
@@ -248,6 +230,13 @@ export class HotSession {
     for (const dir of [this.options.crateDir, ...this.dependencyDirs]) {
       this.#watchers.push(watch(dir, { recursive: true }, (_event, name) => this.#onFileEvent(dir, name)));
     }
+    // A member crate inherits its workspace's manifest, lockfile and Cargo
+    // configuration. Watch just those parent directories, not the entire
+    // workspace (which may contain the JS build output and Cargo target dir).
+    for (const dir of new Set([...this.#configurationFiles].map((file) => path.dirname(file)))) {
+      this.#watchConfigurationDir(dir);
+      if (path.basename(dir) === ".cargo") this.#watchConfigurationDir(path.dirname(dir));
+    }
     // Edits made during the initial build happened before watchers were attached.
     const current = this.#sources();
     for (const file of new Set([...this.#liveSources.keys(), ...current.keys()])) {
@@ -255,6 +244,25 @@ export class HotSession {
         this.#onFileEvent(this.options.crateDir, path.relative(this.options.crateDir, file));
       }
     }
+  }
+
+  #watchConfigurationDir(dir: string): void {
+    if (dir === this.options.crateDir || this.#configurationWatchDirs.has(dir) || !existsSync(dir)) return;
+    this.#configurationWatchDirs.add(dir);
+    this.#watchers.push(
+      watch(dir, (_event, name) => {
+        if (!name) return;
+        const file = path.join(dir, name.toString());
+        if (this.#configurationFiles.has(file)) this.#onFileEvent(dir, name);
+        // A Cargo configuration directory may be created after the initial build.
+        if (name.toString() === ".cargo" && existsSync(file)) {
+          this.#watchConfigurationDir(file);
+          for (const config of ["config", "config.toml"]) {
+            if (existsSync(path.join(file, config))) this.#onFileEvent(file, config);
+          }
+        }
+      }),
+    );
   }
 
   #onFileEvent(dir: string, name: string | Buffer | null): void {
@@ -269,8 +277,15 @@ export class HotSession {
     ) {
       return;
     }
-    if (!relative.endsWith(".rs") && !FULL_REBUILD_FILES.has(relative)) return;
-    this.#pending.add(path.join(dir, relative));
+    const file = path.join(dir, relative);
+    if (relative === ".cargo" && existsSync(file)) {
+      for (const config of ["config", "config.toml"]) {
+        if (existsSync(path.join(file, config))) this.#onFileEvent(file, config);
+      }
+    }
+    if (!relative.endsWith(".rs") && !FULL_REBUILD_FILES.has(relative) && !this.#configurationFiles.has(file))
+      return;
+    this.#pending.add(file);
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
       const files = [...this.#pending];
@@ -284,6 +299,7 @@ export class HotSession {
     this.#pending.clear();
     for (const watcher of this.#watchers) watcher.close();
     this.#watchers = [];
+    this.#configurationWatchDirs.clear();
   }
 
   /** The local dependency crate containing `file`, if any. */

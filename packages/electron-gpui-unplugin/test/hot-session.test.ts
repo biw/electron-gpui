@@ -26,6 +26,7 @@ it("processes an edit saved while the previous patch is being acknowledged", asy
   vi.mocked(execFileSync).mockReturnValue(
     JSON.stringify({
       target_directory: path.join(directory, "target"),
+      workspace_root: directory,
       packages: [
         { name: "views", manifest_path: manifest, targets: [{ name: "views", kind: ["cdylib"] }] },
         { name: "electron-gpui", manifest_path: path.join(sdk, "Cargo.toml"), targets: [] },
@@ -77,3 +78,67 @@ it("processes an edit saved while the previous patch is being acknowledged", asy
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it.each(["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "new .cargo/config.toml"])(
+  "rebuilds a member crate after its parent workspace's %s changes",
+  async (configuration) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "electron-gpui-workspace-session-"));
+    const crate = path.join(directory, "member");
+    const sdk = path.join(directory, "sdk/electron-gpui");
+    const tool = path.join(directory, "sdk/electron-gpui-hotpatch");
+    const created = configuration.startsWith("new ");
+    const file = path.join(directory, configuration.replace(/^new /, ""));
+    mkdirSync(path.join(crate, "src"), { recursive: true });
+    mkdirSync(sdk, { recursive: true });
+    mkdirSync(tool, { recursive: true });
+    if (!created) mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(path.join(crate, "Cargo.toml"), "[package]\nname = 'views'\n");
+    writeFileSync(path.join(crate, "src/lib.rs"), "fn value() { 1 }\n");
+    writeFileSync(path.join(tool, "Cargo.toml"), "[package]\nname = 'electron-gpui-hotpatch'\n");
+    if (!created) writeFileSync(file, "original");
+    vi.mocked(execFileSync).mockReturnValue(
+      JSON.stringify({
+        target_directory: path.join(directory, "target"),
+        workspace_root: directory,
+        packages: [
+          {
+            name: "views",
+            manifest_path: path.join(crate, "Cargo.toml"),
+            targets: [{ name: "views", kind: ["cdylib"] }],
+          },
+          { name: "electron-gpui", manifest_path: path.join(sdk, "Cargo.toml"), targets: [] },
+        ],
+      }),
+    );
+    vi.mocked(spawn).mockImplementation(() => {
+      const child = new EventEmitter() as ReturnType<typeof spawn>;
+      queueMicrotask(() => child.emit("exit", 0));
+      return child;
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const session = new HotSession({
+      projectDir: directory,
+      crateDir: crate,
+      build: true,
+      release: false,
+      universal: false,
+      assetFileName: "views.node",
+      builtAddon: path.join(crate, "index.node"),
+    });
+    try {
+      await session.fatBuild();
+      session.start();
+      vi.mocked(spawn).mockClear();
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "changed");
+      await vi.waitFor(() => expect(readFileSync(session.triggerFile, "utf8")).not.toBe(""), {
+        timeout: 5000,
+      });
+      expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(spawn).mock.calls[0][1]?.[0]).toBe("fat");
+    } finally {
+      session.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);

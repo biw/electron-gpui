@@ -18,8 +18,9 @@ const here = import.meta.dirname;
 const source = join(here, "native/src/lib.rs");
 const themeSource = join(here, "theme/src/lib.rs");
 const manifestSource = join(here, "native/Cargo.toml");
+const workspaceManifest = join(here, "../../Cargo.toml");
 const originals = new Map(
-  [source, themeSource, manifestSource].map((file) => [file, readFileSync(file, "utf8")]),
+  [source, themeSource, manifestSource, workspaceManifest].map((file) => [file, readFileSync(file, "utf8")]),
 );
 const status = join(tmpdir(), `electron-gpui-hot-smoke-${process.pid}.json`);
 const appPids = new Set();
@@ -141,23 +142,37 @@ try {
     throw new Error("expected a restart for a struct change, but the pid is unchanged");
   console.log(`[hot-smoke] struct change restarted the app (${hot.pid} -> ${restarted.pid})`);
 
+  edit((s) => s.replace("struct Counter {", "#[repr(C)]\nstruct Counter {").replace(pong(3), pong(5)));
+  const attributed = await waitFor("a layout-attribute restart", (s) => s.pong.v === 5, 5 * 60_000);
+  if (attributed.pid === restarted.pid) throw new Error("layout attribute change did not restart the app");
+  console.log(`[hot-smoke] layout attribute restarted the app (${restarted.pid} -> ${attributed.pid})`);
+
   edit((s) => s.replace('NAME: &str = "mocha"', 'NAME: &str = "latte"'), themeSource);
   const rebuilt = await waitFor("the theme change", (s) => s.pong.theme === "latte", 5 * 60_000);
-  if (rebuilt.pid === restarted.pid) {
+  if (rebuilt.pid === attributed.pid) {
     throw new Error("expected a restart for a dependency change, but the pid is unchanged");
   }
   console.log(
-    `[hot-smoke] dependency crate change rebuilt and restarted the app (${restarted.pid} -> ${rebuilt.pid})`,
+    `[hot-smoke] dependency crate change rebuilt and restarted the app (${attributed.pid} -> ${rebuilt.pid})`,
   );
   // The rebuilt binary may be byte-identical. Windows must still be able to
   // emit/load it while the old process owns its loaded addon copy.
   edit((s) => s + "\n[package.metadata.electron-gpui-smoke]\nrestart = true\n", manifestSource);
   const configured = await waitFor(
     "a manifest-triggered restart",
-    (s) => s.pid !== rebuilt.pid && s.pong.v === 3,
+    (s) => s.pid !== rebuilt.pid && s.pong.v === 5,
     5 * 60_000,
   );
   console.log(`[hot-smoke] manifest change restarted the app (${rebuilt.pid} -> ${configured.pid})`);
+  edit((s) => s + "\n[workspace.metadata.electron-gpui-smoke]\nrestart = true\n", workspaceManifest);
+  const workspaceConfigured = await waitFor(
+    "a parent workspace manifest restart",
+    (s) => s.pid !== configured.pid && s.pong.v === 5,
+    5 * 60_000,
+  );
+  console.log(
+    `[hot-smoke] workspace manifest restarted the app (${configured.pid} -> ${workspaceConfigured.pid})`,
+  );
   console.log("[hot-smoke] PASS");
 } catch (error) {
   failed = true;

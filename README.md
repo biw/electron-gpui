@@ -94,17 +94,17 @@ electron_gpui::export! { "Hello" => Hello }
 
 In watch mode, saving a Rust file patches the change into the running app within a few seconds, without restarting it, and views keep their state. When a change can't be patched safely, the plugin rebuilds and restarts the app instead:
 
-| Change                                                                 | Result                                       |
-| ---------------------------------------------------------------------- | -------------------------------------------- |
-| Function bodies, `render`, event handlers, `on_message`, new functions | Hot-patched                                  |
-| `struct`, `enum` or `union` definitions                                | Restart                                      |
-| `Cargo.toml`, `Cargo.lock`, `build.rs`, added or deleted files         | Restart                                      |
-| Other local crates your views crate depends on                         | Restart                                      |
-| Code that needs something new from a dependency                        | Restart (the patch fails to link)            |
-| Compile errors                                                         | Shown in the terminal; the app keeps running |
+| Change                                                                                                  | Result                                       |
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Function bodies, `render`, event handlers, `on_message`, new functions                                  | Hot-patched                                  |
+| Type definitions/aliases, layout attributes, constants, function signatures, registrations              | Restart                                      |
+| Crate/workspace manifests, lockfiles, Cargo/toolchain configuration, `build.rs`, added or deleted files | Restart                                      |
+| Other local crates your views crate depends on                                                          | Restart                                      |
+| Code that needs something new from a dependency                                                         | Restart (the patch fails to link)            |
+| Compile errors                                                                                          | Shown in the terminal; the app keeps running |
 
 - Thread-locals and `static`s in your views crate reset on each patch.
-- Patches don't run your crate's static initializers again (`actions!` and `#[derive(Action)]` registrations, `inventory`, `ctor`), so actions you add take effect after the next restart.
+- Patches don't run your crate's static initializers again (`actions!` and `#[derive(Action)]` registrations, `inventory`, `ctor`). Changes to registration declarations rebuild and restart the app.
 - Each patch is built for the running app process. Patches that process didn't apply (it crashed or quit) are discarded, never applied to the next session.
 - If your bundler config sets a watch `include` filter, it must keep matching `**/electron-gpui-hot/*/rebuild-trigger`, which the plugin touches to restart the app. The Vite plugin adds it for you; with Rollup or Rolldown, add it yourself.
 - Covered windows show the change once they're visible again (GPUI only redraws visible windows).
