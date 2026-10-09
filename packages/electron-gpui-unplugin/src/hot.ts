@@ -214,16 +214,18 @@ export class HotSession {
   /** Build the addon so it can be patched later, and remember the sources it was built from. */
   async fatBuild(): Promise<void> {
     const tool = await this.#ensureTool();
+    const sources = this.#sources();
     const code = await run(
       tool,
       ["fat", this.options.crateDir, this.options.builtAddon],
       this.options.crateDir,
     );
     if (code !== 0) throw new Error("electron-gpui: build failed");
-    this.#snapshot();
+    this.#builtSources = sources;
+    this.#liveSources = new Map(sources);
   }
 
-  #snapshot(): void {
+  #sources(): Map<string, string> {
     const sources = new Map<string, string>();
     const walk = (dir: string): void => {
       for (const entry of safeReaddir(dir)) {
@@ -233,10 +235,11 @@ export class HotSession {
       }
     };
     walk(path.join(this.options.crateDir, "src"));
-    const buildScript = path.join(this.options.crateDir, "build.rs");
-    if (existsSync(buildScript)) sources.set(buildScript, readFileSync(buildScript, "utf8"));
-    this.#builtSources = sources;
-    this.#liveSources = new Map(sources);
+    for (const name of FULL_REBUILD_FILES) {
+      const file = path.join(this.options.crateDir, name);
+      if (existsSync(file)) sources.set(file, readFileSync(file, "utf8"));
+    }
+    return sources;
   }
 
   /** Start watching the crate and its local dependencies. Changes are handled one batch at a time. */
@@ -244,6 +247,13 @@ export class HotSession {
     if (this.#watchers.length > 0) return;
     for (const dir of [this.options.crateDir, ...this.dependencyDirs]) {
       this.#watchers.push(watch(dir, { recursive: true }, (_event, name) => this.#onFileEvent(dir, name)));
+    }
+    // Edits made during the initial build happened before watchers were attached.
+    const current = this.#sources();
+    for (const file of new Set([...this.#liveSources.keys(), ...current.keys()])) {
+      if (current.get(file) !== this.#liveSources.get(file)) {
+        this.#onFileEvent(this.options.crateDir, path.relative(this.options.crateDir, file));
+      }
     }
   }
 
@@ -270,6 +280,8 @@ export class HotSession {
   }
 
   stop(): void {
+    clearTimeout(this.#timer);
+    this.#pending.clear();
     for (const watcher of this.#watchers) watcher.close();
     this.#watchers = [];
   }
@@ -288,15 +300,17 @@ export class HotSession {
       );
     }
 
+    const nextSources = new Map<string, string | undefined>();
     const changed = files.filter((file) => {
       const next = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+      nextSources.set(file, next);
       return next !== this.#liveSources.get(file);
     });
     if (changed.length === 0) return;
 
     const reasons = changed
       .map((file) => {
-        const next = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+        const next = nextSources.get(file);
         return classifyChange(this.options.crateDir, file, this.#builtSources.get(file), next) === "full"
           ? path.relative(this.options.crateDir, file)
           : undefined;
@@ -339,7 +353,10 @@ export class HotSession {
       );
     }
     for (const file of changed) {
-      if (existsSync(file)) this.#liveSources.set(file, readFileSync(file, "utf8"));
+      // An editor can save again while compilation or patch acknowledgement is
+      // pending. Only mark the source this patch started with as applied.
+      const compiled = nextSources.get(file);
+      if (compiled !== undefined) this.#liveSources.set(file, compiled);
     }
     log(
       `hot-patched ${changed.map((f) => path.relative(this.options.crateDir, f)).join(", ")} in ${Math.round(performance.now() - started)}ms`,
