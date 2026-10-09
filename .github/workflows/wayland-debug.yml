@@ -24,3 +24,13 @@ jobs:
       - name: Native Wayland debugger trace
         timeout-minutes: 20
         run: pnpm exec node scripts/ci-smoke.mjs wayland smoke
+      - name: Wayland symbol bindings
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for file in Path('.context').glob('wayland-bindings.*'):
+              for line in file.read_text().splitlines():
+                  if 'wl_proxy_marshal_flags' in line or 'wl_display_connect_to_fd' in line:
+                      print(file.name, line)
+          PY

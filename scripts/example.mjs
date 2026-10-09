@@ -77,12 +77,22 @@ if (process.argv[1] === import.meta.filename) {
             "run",
             "-ex",
             "bt 30",
+            "-ex",
+            "info proc mappings",
             "--args",
             electron,
             ...args,
           ]
         : args,
-      command === "smoke" ? { ELECTRON_GPUI_SMOKE: "1" } : {},
+      {
+        ...(command === "smoke" ? { ELECTRON_GPUI_SMOKE: "1" } : {}),
+        ...(debuggerEnabled
+          ? {
+              LD_DEBUG: "bindings",
+              LD_DEBUG_OUTPUT: join(project, "../../.context/wayland-bindings"),
+            }
+          : {}),
+      },
     );
   }
 }
