@@ -100,8 +100,9 @@ export class GpuiWindow<Message = unknown, Event = unknown> extends EventEmitter
 
   /**
    * Keep the window above normal windows, like `BrowserWindow`'s
-   * `setAlwaysOnTop(flag, "floating", relativeLevel)`: `relativeLevel` raises it
-   * that many levels above the floating level.
+   * `setAlwaysOnTop(flag, "floating", relativeLevel)`. Windows and X11 use native
+   * topmost behavior; ordinary Wayland windows ignore this request. On macOS,
+   * `relativeLevel` raises it that many levels above the floating level.
    */
   setAlwaysOnTop(flag: boolean, relativeLevel = 0): void {
     this.#assertOpen();

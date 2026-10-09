@@ -154,7 +154,7 @@ fn repair(
         if address == 0 || size == 0 {
             continue;
         }
-        if !mapped(address, size) || size % size_of::<Relocation>() != 0 {
+        if !mapped(address, size) || !size.is_multiple_of(size_of::<Relocation>()) {
             return Err("relocation table is outside loaded segments".into());
         }
         let relocations = unsafe {
@@ -190,7 +190,9 @@ fn repair(
                 continue; // Project-defined protocol interfaces are not system symbols.
             }
             let target = base + relocation.offset;
-            if !mapped(target, size_of::<usize>()) || target % align_of::<AtomicUsize>() != 0 {
+            if !mapped(target, size_of::<usize>())
+                || !target.is_multiple_of(align_of::<AtomicUsize>())
+            {
                 return Err("Wayland import is outside loaded segments or unaligned".into());
             }
             let replacement = (replacement as usize).wrapping_add_signed(relocation.addend);
