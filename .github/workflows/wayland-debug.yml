@@ -1,0 +1,23 @@
+name: Wayland diagnostics
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  ELECTRON_GPUI_NO_SWEEP: "1"
+  ELECTRON_GPUI_SMOKE_DEBUGGER: "1"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: sudo apt-get install -y gdb
+      - run: pnpm --filter counter-example add --save-dev electron@30
+      - run: pnpm build
+      - name: Native Wayland debugger trace
+        timeout-minutes: 20
+        run: pnpm exec node scripts/ci-smoke.mjs wayland smoke

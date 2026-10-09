@@ -60,9 +60,28 @@ if (process.argv[1] === import.meta.filename) {
   else {
     await run(process.execPath, [viteBinary(project), "build"]);
     const require = createRequire(join(project, "package.json"));
+    const electron = require("electron");
+    const args = [".", ...(process.env.ELECTRON_GPUI_ELECTRON_ARGS?.split(" ").filter(Boolean) ?? [])];
+    const debuggerEnabled = process.env.ELECTRON_GPUI_SMOKE_DEBUGGER === "1";
     await run(
-      require("electron"),
-      [".", ...(process.env.ELECTRON_GPUI_ELECTRON_ARGS?.split(" ").filter(Boolean) ?? [])],
+      debuggerEnabled ? "gdb" : electron,
+      debuggerEnabled
+        ? [
+            "--batch",
+            "--return-child-result",
+            "-ex",
+            "set print thread-events off",
+            "-ex",
+            "handle SIGPIPE nostop noprint pass",
+            "-ex",
+            "run",
+            "-ex",
+            "bt 30",
+            "--args",
+            electron,
+            ...args,
+          ]
+        : args,
       command === "smoke" ? { ELECTRON_GPUI_SMOKE: "1" } : {},
     );
   }

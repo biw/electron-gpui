@@ -24,6 +24,7 @@ void app
   .then(() => {
     if (SMOKE) console.log(`[smoke] Electron ${process.versions.electron} ready; initializing GPUI`);
     const gpui = createGpui(addon, SMOKE ? { panicLog: smokePanicLog } : {});
+    if (SMOKE) console.log("[smoke] GPUI initialized");
     if (startupTimeout) clearTimeout(startupTimeout);
     if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
     if (SMOKE) return runSmokeTest(gpui);
