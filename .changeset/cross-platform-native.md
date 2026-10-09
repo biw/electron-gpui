@@ -7,4 +7,6 @@ Add Windows x64 (MSVC) and Linux x64 (GNU/glibc, X11 and native Wayland) support
 
 Close development sessions with their bundler watchers, coalesce Electron restarts, cancel queued patches during shutdown, and require the running addon to match the full build used for patching.
 
+Print portable scaffold loading examples and quote crate paths containing spaces, apostrophes, or URL characters.
+
 Restart development apps for layout attributes, type aliases, constants, function signatures, registration changes and inherited Cargo workspace configuration. Keep newly added path dependencies watched, detect configuration saves reliably on macOS, keep ordinary function-body edits patchable and restrict Electron 30's Wayland import repair to the addon and its graphics driver dependency graph.

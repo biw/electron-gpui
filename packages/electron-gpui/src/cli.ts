@@ -12,7 +12,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -86,6 +86,9 @@ function init(args: string[]): void {
 
   copyTemplate(TEMPLATE_DIR, dir, { name, sdk });
   const rel = relative(process.cwd(), dir) || ".";
+  const addonUrl = `./${rel.split(sep).map(encodeURIComponent).join("/")}/index.node`;
+  const shellDir =
+    process.platform === "win32" ? `'${rel.replaceAll("'", "''")}'` : `'${rel.replaceAll("'", "'\\''")}'`;
   console.log(`Created ${rel}/ (crate ${name}).
 
 Next, add the bundler plugin (pnpm add -D electron-gpui-unplugin):
@@ -97,7 +100,7 @@ and open a view from Electron's main process:
   import addon from "virtual:electron-gpui/addon";
   app.whenReady().then(() => createGpui(addon).openWindow("Hello", { title: "Hello" }));
 
-Without a bundler: npx electron-gpui build ${rel}, then createGpui(new URL("./${rel}/index.node", import.meta.url)).`);
+Without a bundler${process.platform === "win32" ? " (PowerShell)" : ""}: npx electron-gpui build ${shellDir}, then createGpui(new URL(${JSON.stringify(addonUrl)}, import.meta.url)).`);
 }
 
 function copyTemplate(from: string, to: string, vars: Record<string, string>): void {
