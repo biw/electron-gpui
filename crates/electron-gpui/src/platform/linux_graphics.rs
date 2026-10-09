@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, CString, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,14 @@ pub(super) fn prepare() -> Result<(), String> {
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     PREPARED
         .get_or_init(|| {
-            let existing = wayland_symbols::loaded_objects();
             let client = open(OsStr::new("libwayland-client.so.0"))?;
             let cursor = open(OsStr::new("libwayland-cursor.so.0"))?;
+            let mut roots = HashSet::from([
+                wayland_symbols::library_base(client)?,
+                wayland_symbols::library_base(cursor)?,
+            ]);
             for manifest in graphics_manifests() {
-                if let Err(error) = bind_manifest(&manifest) {
+                if let Err(error) = bind_manifest(&manifest, &mut roots) {
                     // An installed driver may be for a different architecture,
                     // unavailable on this machine, or disabled by configuration.
                     // The renderer still selects among the usable drivers.
@@ -32,7 +36,7 @@ pub(super) fn prepare() -> Result<(), String> {
                     }
                 }
             }
-            wayland_symbols::redirect(&existing, client, cursor, prepare as *const ())
+            wayland_symbols::redirect(&roots, client, cursor, prepare as *const ())
         })
         .clone()
 }
@@ -153,7 +157,7 @@ fn vulkan_directories(kind: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn bind_manifest(path: &Path) -> Result<(), String> {
+fn bind_manifest(path: &Path, roots: &mut HashSet<usize>) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|error| error.to_string())?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&data).map_err(|error| error.to_string())?;
@@ -188,7 +192,7 @@ fn bind_manifest(path: &Path) -> Result<(), String> {
         } else {
             library.to_owned()
         };
-        open(library.as_os_str())?;
+        roots.insert(wayland_symbols::library_base(open(library.as_os_str())?)?);
     }
     Ok(())
 }

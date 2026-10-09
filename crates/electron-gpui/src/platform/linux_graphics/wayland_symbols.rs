@@ -1,10 +1,11 @@
 //! GNU/Linux x64 ELF import repair for hosts exporting private Wayland symbols.
 //!
-//! Keep the host's allocator and every other import intact. Only new graphics
-//! libraries, system Wayland, and this addon receive system Wayland bindings.
+//! Keep the host's allocator and every other import intact. Only graphics
+//! libraries and their dependencies, system Wayland, and this addon receive
+//! system Wayland bindings.
 //! Electron's own libraries continue to use its private implementation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,26 +22,152 @@ struct Relocation {
     addend: isize,
 }
 
-pub(super) fn loaded_objects() -> HashSet<usize> {
+// The first field of glibc's public link_map is the ELF load bias. Handles
+// opened by prepare remain loaded, keeping this link map and its DSOs alive.
+pub(super) fn library_base(handle: *mut libc::c_void) -> Result<usize, String> {
+    let mut link_map: *mut libc::c_void = std::ptr::null_mut();
+    if unsafe {
+        libc::dlinfo(
+            handle,
+            libc::RTLD_DI_LINKMAP,
+            (&mut link_map as *mut *mut libc::c_void).cast(),
+        )
+    } != 0
+        || link_map.is_null()
+    {
+        return Err("locating a graphics library's ELF load bias".into());
+    }
+    Ok(unsafe { *link_map.cast::<usize>() })
+}
+
+struct Object {
+    base: usize,
+    names: Vec<Vec<u8>>,
+    needed: Vec<Vec<u8>>,
+}
+
+fn dependencies(roots: &HashSet<usize>, objects: &[Object]) -> HashSet<usize> {
+    let mut by_name = HashMap::new();
+    let by_base: HashMap<_, _> = objects.iter().map(|object| (object.base, object)).collect();
+    for object in objects {
+        for name in &object.names {
+            by_name.entry(name.as_slice()).or_insert(object.base);
+        }
+    }
+    let mut selected = roots.clone();
+    let mut pending: Vec<_> = roots.iter().copied().collect();
+    while let Some(base) = pending.pop() {
+        if let Some(object) = by_base.get(&base) {
+            for name in &object.needed {
+                if let Some(base) = by_name.get(name.as_slice()) {
+                    if selected.insert(*base) {
+                        pending.push(*base);
+                    }
+                }
+            }
+        }
+    }
+    selected
+}
+
+fn loaded_objects() -> Vec<Object> {
     unsafe extern "C" fn visit(
         info: *mut libc::dl_phdr_info,
         _: usize,
         data: *mut libc::c_void,
     ) -> libc::c_int {
-        // dl_iterate_phdr keeps these headers alive throughout the callback.
-        unsafe { &mut *data.cast::<HashSet<usize>>() }
-            .insert(unsafe { (*info).dlpi_addr } as usize);
+        // Copy metadata under dl_iterate_phdr's loader lock: unrelated host
+        // libraries may be loaded or unloaded concurrently with preparation.
+        let objects = unsafe { &mut *data.cast::<Vec<Object>>() };
+        let info = unsafe { &*info };
+        let name = unsafe { CStr::from_ptr(info.dlpi_name) }.to_bytes();
+        let headers =
+            unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+        if let Ok(mut object) = object_metadata(info.dlpi_addr as usize, headers) {
+            object.names.push(name.to_owned());
+            object.names.push(
+                name.rsplit(|byte| *byte == b'/')
+                    .next()
+                    .unwrap_or(name)
+                    .to_owned(),
+            );
+            objects.push(object);
+        }
         0
     }
-    let mut objects = HashSet::new();
-    unsafe {
-        libc::dl_iterate_phdr(Some(visit), (&mut objects as *mut HashSet<usize>).cast());
-    }
+    let mut objects = Vec::new();
+    unsafe { libc::dl_iterate_phdr(Some(visit), (&mut objects as *mut Vec<Object>).cast()) };
     objects
 }
 
+fn object_metadata(base: usize, headers: &[libc::Elf64_Phdr]) -> Result<Object, String> {
+    let mut object = Object {
+        base,
+        names: Vec::new(),
+        needed: Vec::new(),
+    };
+    let Some(dynamic) = headers
+        .iter()
+        .find(|header| header.p_type == libc::PT_DYNAMIC)
+    else {
+        return Ok(object);
+    };
+    let address = base + dynamic.p_vaddr as usize;
+    let size = dynamic.p_memsz as usize;
+    if !mapped(base, headers, address, size) {
+        return Err("dynamic table is outside loaded segments".into());
+    }
+    let table = unsafe {
+        std::slice::from_raw_parts(address as *const Dynamic, size / size_of::<Dynamic>())
+    };
+    let value = |tag| {
+        table
+            .iter()
+            .take_while(|entry| entry.tag != 0)
+            .find(|entry| entry.tag == tag)
+            .map_or(0, |entry| entry.value)
+    };
+    let strings = value(5); // DT_STRTAB
+    let size = value(10); // DT_STRSZ
+    if strings == 0 || size == 0 {
+        return Ok(object);
+    }
+    if !mapped(base, headers, strings, size) {
+        return Err("string table is outside loaded segments".into());
+    }
+    let strings = unsafe { std::slice::from_raw_parts(strings as *const u8, size) };
+    for entry in table.iter().take_while(|entry| entry.tag != 0) {
+        if !matches!(entry.tag, 1 | 14) {
+            continue;
+        } // DT_NEEDED, DT_SONAME
+        let name = strings
+            .get(entry.value..)
+            .ok_or("dependency name is outside string table")?;
+        let end = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("unterminated dependency name")?;
+        if entry.tag == 1 {
+            object.needed.push(name[..end].to_owned());
+        } else {
+            object.names.push(name[..end].to_owned());
+        }
+    }
+    Ok(object)
+}
+
+fn mapped(base: usize, headers: &[libc::Elf64_Phdr], address: usize, size: usize) -> bool {
+    headers.iter().any(|header| {
+        header.p_type == libc::PT_LOAD
+            && address >= base + header.p_vaddr as usize
+            && address
+                .checked_add(size)
+                .is_some_and(|end| end <= base + header.p_vaddr as usize + header.p_memsz as usize)
+    })
+}
+
 pub(super) fn redirect(
-    existing: &HashSet<usize>,
+    roots: &HashSet<usize>,
     client: *mut libc::c_void,
     cursor: *mut libc::c_void,
     addon_function: *const (),
@@ -50,13 +177,14 @@ pub(super) fn redirect(
         return Err("locating the GPUI addon for Wayland symbol binding".into());
     }
     let addon_base = unsafe { owner.assume_init() }.dli_fbase as usize;
+    let mut selected = dependencies(roots, &loaded_objects());
+    selected.insert(addon_base);
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if page_size <= 0 || !(page_size as usize).is_power_of_two() {
         return Err("invalid system page size for Wayland symbol binding".into());
     }
     struct State<'a> {
-        existing: &'a HashSet<usize>,
-        addon_base: usize,
+        selected: &'a HashSet<usize>,
         client: *mut libc::c_void,
         cursor: *mut libc::c_void,
         page_size: usize,
@@ -70,13 +198,8 @@ pub(super) fn redirect(
         let state = unsafe { &mut *data.cast::<State<'_>>() };
         let info = unsafe { &*info };
         let name = unsafe { CStr::from_ptr(info.dlpi_name) }.to_bytes();
-        let filename = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
         let base = info.dlpi_addr as usize;
-        if base == state.addon_base
-            || !state.existing.contains(&base)
-            || filename.starts_with(b"libwayland-client.")
-            || filename.starts_with(b"libwayland-cursor.")
-        {
+        if state.selected.contains(&base) {
             let headers =
                 unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
             if let Err(error) = repair(base, headers, state.client, state.cursor, state.page_size) {
@@ -87,8 +210,7 @@ pub(super) fn redirect(
         0
     }
     let mut state = State {
-        existing,
-        addon_base,
+        selected: &selected,
         client,
         cursor,
         page_size: page_size as usize,
@@ -105,15 +227,7 @@ fn repair(
     cursor: *mut libc::c_void,
     page_size: usize,
 ) -> Result<(), String> {
-    let mapped = |address: usize, size: usize| {
-        headers.iter().any(|header| {
-            header.p_type == libc::PT_LOAD
-                && address >= base + header.p_vaddr as usize
-                && address.checked_add(size).is_some_and(|end| {
-                    end <= base + header.p_vaddr as usize + header.p_memsz as usize
-                })
-        })
-    };
+    let mapped = |address, size| mapped(base, headers, address, size);
     let Some(dynamic) = headers
         .iter()
         .find(|header| header.p_type == libc::PT_DYNAMIC)
@@ -245,6 +359,58 @@ fn repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_graphics_dependencies_without_touching_unrelated_host_objects() {
+        let object = |base, names: &[&str], needed: &[&str]| Object {
+            base,
+            names: names
+                .iter()
+                .map(|name| name.as_bytes().to_owned())
+                .collect(),
+            needed: needed
+                .iter()
+                .map(|name| name.as_bytes().to_owned())
+                .collect(),
+        };
+        let objects = [
+            object(1, &["libdriver.so"], &["libshared.so", "libmissing.so"]),
+            // Already-loaded dependencies must still receive compatible imports.
+            object(
+                2,
+                &["libshared.so", "/usr/lib/libshared.so"],
+                &["libwayland-client.so.0"],
+            ),
+            object(3, &["libwayland-client.so.0"], &["libshared.so"]),
+            // A host module loaded concurrently is not a graphics dependency.
+            object(4, &["libelectron-host.so"], &["libwayland-client.so.0"]),
+        ];
+        assert_eq!(
+            dependencies(&HashSet::from([1]), &objects),
+            HashSet::from([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn reads_dependency_metadata_from_a_retained_system_library() {
+        let client = unsafe { libc::dlopen(c"libwayland-client.so.0".as_ptr(), libc::RTLD_NOW) };
+        assert!(!client.is_null());
+        let base = library_base(client).expect("system Wayland load bias");
+        let objects = loaded_objects();
+        let object = objects
+            .iter()
+            .find(|object| object.base == base)
+            .expect("loaded Wayland object");
+        assert!(
+            object
+                .names
+                .iter()
+                .any(|name| name == b"libwayland-client.so.0")
+        );
+        assert!(!object.needed.is_empty());
+        assert!(dependencies(&HashSet::from([base]), &objects).len() > 1);
+        assert_eq!(unsafe { libc::dlclose(client) }, 0);
+    }
 
     struct Fixture {
         address: usize,
