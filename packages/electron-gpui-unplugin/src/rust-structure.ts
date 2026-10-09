@@ -1,7 +1,5 @@
 interface Token {
   text: string;
-  start: number;
-  end: number;
 }
 
 const identifier = /^(?:r#)?[_\p{ID_Start}][_\p{ID_Continue}]*$/u;
@@ -60,29 +58,33 @@ function tokens(source: string): Token[] {
       const word = /^(?:r#)?[_\p{ID_Start}][_\p{ID_Continue}]*/u.exec(rest);
       offset += word ? word[0].length : 1;
     }
-    result.push({ text: source.slice(start, offset), start, end: offset });
+    result.push({ text: source.slice(start, offset) });
   }
   return result;
 }
 
+function tokenAt(input: Token[], index: number): string {
+  return input[index]?.text ?? "";
+}
+
 function groupEnd(input: Token[], start: number): number {
-  const closing = opening.get(input[start]?.text);
+  const closing = opening.get(tokenAt(input, start));
   if (!closing) return start + 1;
   let cursor = start + 1;
   while (cursor < input.length) {
-    if (input[cursor].text === closing) return cursor + 1;
-    cursor = opening.has(input[cursor].text) ? groupEnd(input, cursor) : cursor + 1;
+    if (tokenAt(input, cursor) === closing) return cursor + 1;
+    cursor = opening.has(tokenAt(input, cursor)) ? groupEnd(input, cursor) : cursor + 1;
   }
   return input.length;
 }
 
 function itemEnd(input: Token[], start: number): number {
-  const definition = /^(struct|enum|union)$/.test(input[start].text);
+  const definition = /^(struct|enum|union)$/.test(tokenAt(input, start));
   let angles = 0;
   for (let cursor = start + 1; cursor < input.length; cursor++) {
-    const text = input[cursor].text;
+    const text = tokenAt(input, cursor);
     if (text === "<") angles++;
-    else if (text === ">" && input[cursor - 1]?.text !== "-") angles = Math.max(0, angles - 1);
+    else if (text === ">" && tokenAt(input, cursor - 1) !== "-") angles = Math.max(0, angles - 1);
     if (text === ";" && angles === 0) return cursor + 1;
     if (opening.has(text)) {
       const end = groupEnd(input, cursor);
@@ -97,23 +99,23 @@ function itemEnd(input: Token[], start: number): number {
 function localDefinitions(input: Token[]): string[] {
   const result: string[] = [];
   for (let cursor = 0; cursor < input.length; cursor++) {
-    if (!/^(struct|enum|union|type|const|static)$/.test(input[cursor].text)) continue;
-    const name = input[cursor + 1]?.text === "mut" ? cursor + 2 : cursor + 1;
-    if (!identifier.test(input[name]?.text ?? "")) continue;
+    if (!/^(struct|enum|union|type|const|static)$/.test(tokenAt(input, cursor))) continue;
+    const name = tokenAt(input, cursor + 1) === "mut" ? cursor + 2 : cursor + 1;
+    if (!identifier.test(tokenAt(input, name))) continue;
     let start = cursor;
-    if (input[start - 1]?.text === "pub") start--;
-    else if (input[start - 1]?.text === ")") {
+    if (tokenAt(input, start - 1) === "pub") start--;
+    else if (tokenAt(input, start - 1) === ")") {
       let candidate = start - 2;
-      while (candidate >= 0 && !(input[candidate].text === "(" && groupEnd(input, candidate) === start))
+      while (candidate >= 0 && !(tokenAt(input, candidate) === "(" && groupEnd(input, candidate) === start))
         candidate--;
-      if (input[candidate - 1]?.text === "pub") start = candidate - 1;
+      if (tokenAt(input, candidate - 1) === "pub") start = candidate - 1;
     }
     // Include the attributes directly before the declaration (not its uses).
-    while (input[start - 1]?.text === "]") {
+    while (tokenAt(input, start - 1) === "]") {
       let candidate = start - 2;
-      while (candidate >= 0 && !(input[candidate].text === "[" && groupEnd(input, candidate) === start))
+      while (candidate >= 0 && !(tokenAt(input, candidate) === "[" && groupEnd(input, candidate) === start))
         candidate--;
-      if (input[candidate - 1]?.text !== "#") break;
+      if (tokenAt(input, candidate - 1) !== "#") break;
       start = candidate - 1;
     }
     const end = itemEnd(input, cursor);
@@ -133,29 +135,31 @@ export function rustStructure(source: string): string {
   const input = tokens(source);
   const result: string[] = [];
   for (let cursor = 0; cursor < input.length; cursor++) {
-    const token = input[cursor];
-    result.push(token.text);
-    if (input[cursor + 1]?.text === "!") {
+    const token = tokenAt(input, cursor);
+    result.push(token);
+    if (tokenAt(input, cursor + 1) === "!") {
       const group =
-        input[cursor + 2]?.text === "{" || input[cursor + 2]?.text === "(" || input[cursor + 2]?.text === "["
+        tokenAt(input, cursor + 2) === "{" ||
+        tokenAt(input, cursor + 2) === "(" ||
+        tokenAt(input, cursor + 2) === "["
           ? cursor + 2
           : cursor + 3;
-      if (opening.has(input[group]?.text)) {
+      if (opening.has(tokenAt(input, group))) {
         const end = groupEnd(input, group);
         result.push(...input.slice(cursor + 1, end).map((token) => token.text));
         cursor = end - 1;
         continue;
       }
     }
-    if (token.text !== "fn" || !identifier.test(input[cursor + 1]?.text ?? "")) continue;
+    if (token !== "fn" || !identifier.test(tokenAt(input, cursor + 1))) continue;
     let prefix = cursor - 1;
-    while (prefix >= 0 && ![";", "{", "}"].includes(input[prefix].text)) prefix--;
+    while (prefix >= 0 && ![";", "{", "}"].includes(tokenAt(input, prefix))) prefix--;
     if (input.slice(prefix + 1, cursor).some((token) => token.text === "const")) continue;
     let angles = 0;
     for (let header = cursor + 1; header < input.length; header++) {
-      const text = input[header].text;
+      const text = tokenAt(input, header);
       if (text === "<") angles++;
-      else if (text === ">" && input[header - 1]?.text !== "-") angles = Math.max(0, angles - 1);
+      else if (text === ">" && tokenAt(input, header - 1) !== "-") angles = Math.max(0, angles - 1);
       if (text === ";" && angles === 0) break;
       if (!opening.has(text)) continue;
       const end = groupEnd(input, header);

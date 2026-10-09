@@ -135,7 +135,7 @@ it.each(["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml"
         timeout: 5000,
       });
       expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(spawn).mock.calls[0][1]?.[0]).toBe("fat");
+      expect(vi.mocked(spawn).mock.calls[0]?.[1]?.[0]).toBe("fat");
     } finally {
       session.stop();
       rmSync(directory, { recursive: true, force: true });
