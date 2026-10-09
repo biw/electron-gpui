@@ -206,6 +206,17 @@ fn repair(
                         < (base + header.p_vaddr as usize + header.p_memsz as usize)
                             & !(page_size - 1)
             });
+            if !readonly
+                && !headers.iter().any(|header| {
+                    header.p_type == libc::PT_LOAD
+                        && header.p_flags & libc::PF_W != 0
+                        && target >= base + header.p_vaddr as usize
+                        && target + size_of::<usize>()
+                            <= base + header.p_vaddr as usize + header.p_memsz as usize
+                })
+            {
+                return Err("Wayland import is not in writable data or RELRO".into());
+            }
             // Imports live in writable data or RELRO, never executable code.
             if readonly
                 && unsafe {
@@ -227,4 +238,190 @@ fn repair(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        address: usize,
+        size: usize,
+        headers: Vec<libc::Elf64_Phdr>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(address, libc::MAP_FAILED);
+            let address = address as usize;
+            let strings = b"\0wl_proxy_marshal_flags\0malloc\0";
+            let dynamic = [
+                Dynamic {
+                    tag: 5,
+                    value: address + 512,
+                },
+                Dynamic {
+                    tag: 10,
+                    value: strings.len(),
+                },
+                Dynamic {
+                    tag: 6,
+                    value: address + 256,
+                },
+                Dynamic {
+                    tag: 7,
+                    value: address + 1024,
+                },
+                Dynamic {
+                    tag: 8,
+                    value: 2 * size_of::<Relocation>(),
+                },
+                Dynamic { tag: 0, value: 0 },
+            ];
+            let symbol = |name| libc::Elf64_Sym {
+                st_name: name,
+                st_info: 0,
+                st_other: 0,
+                st_shndx: 0,
+                st_value: 0,
+                st_size: 0,
+            };
+            let symbols = [symbol(0), symbol(1), symbol(24)];
+            let relocations = [
+                Relocation {
+                    offset: 1536,
+                    info: (1 << 32) | 6,
+                    addend: 0,
+                },
+                Relocation {
+                    offset: 1544,
+                    info: (2 << 32) | 7,
+                    addend: 0,
+                },
+            ];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    dynamic.as_ptr(),
+                    address as *mut Dynamic,
+                    dynamic.len(),
+                );
+                std::ptr::copy_nonoverlapping(
+                    symbols.as_ptr(),
+                    (address + 256) as *mut libc::Elf64_Sym,
+                    symbols.len(),
+                );
+                std::ptr::copy_nonoverlapping(
+                    strings.as_ptr(),
+                    (address + 512) as *mut u8,
+                    strings.len(),
+                );
+                std::ptr::copy_nonoverlapping(
+                    relocations.as_ptr(),
+                    (address + 1024) as *mut Relocation,
+                    relocations.len(),
+                );
+                ((address + 1536) as *mut usize).write(0x1234);
+                ((address + 1544) as *mut usize).write(0x5678);
+            }
+            let header = |kind, offset, length| libc::Elf64_Phdr {
+                p_type: kind,
+                p_flags: libc::PF_R | libc::PF_W,
+                p_offset: 0,
+                p_vaddr: offset,
+                p_paddr: 0,
+                p_filesz: length,
+                p_memsz: length,
+                p_align: size as u64,
+            };
+            Self {
+                address,
+                size,
+                headers: vec![
+                    header(libc::PT_LOAD, 0, size as u64),
+                    header(libc::PT_DYNAMIC, 0, size_of_val(&dynamic) as u64),
+                    header(libc::PT_GNU_RELRO, 0, size as u64),
+                ],
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            assert_eq!(
+                unsafe { libc::munmap(self.address as *mut _, self.size) },
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn binds_wayland_preserves_allocator_and_restores_relro() {
+        let fixture = Fixture::new();
+        let client = unsafe { libc::dlopen(c"libwayland-client.so.0".as_ptr(), libc::RTLD_NOW) };
+        assert!(!client.is_null());
+        let expected = unsafe { libc::dlsym(client, c"wl_proxy_marshal_flags".as_ptr()) };
+        assert!(!expected.is_null());
+        assert_eq!(
+            unsafe { libc::mprotect(fixture.address as *mut _, fixture.size, libc::PROT_READ) },
+            0
+        );
+        repair(
+            fixture.address,
+            &fixture.headers,
+            client,
+            client,
+            fixture.size,
+        )
+        .expect("repair imports");
+        assert_eq!(
+            unsafe { ((fixture.address + 1536) as *const usize).read() },
+            expected as usize
+        );
+        assert_eq!(
+            unsafe { ((fixture.address + 1544) as *const usize).read() },
+            0x5678
+        );
+        let maps = std::fs::read_to_string("/proc/self/maps").expect("read memory protections");
+        let mapping = maps
+            .lines()
+            .find(|line| {
+                line.split_whitespace().next().is_some_and(|range| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        let start = usize::from_str_radix(start, 16).expect("mapping start");
+                        let end = usize::from_str_radix(end, 16).expect("mapping end");
+                        fixture.address >= start && fixture.address < end
+                    })
+                })
+            })
+            .expect("fixture mapping");
+        assert_eq!(mapping.split_whitespace().nth(1), Some("r--p"));
+        assert_eq!(unsafe { libc::dlclose(client) }, 0);
+    }
+
+    #[test]
+    fn rejects_relocation_tables_outside_loaded_segments() {
+        let fixture = Fixture::new();
+        let dynamic = fixture.address as *mut Dynamic;
+        unsafe { (*dynamic.add(3)).value = fixture.address + fixture.size - 1 };
+        let error = repair(
+            fixture.address,
+            &fixture.headers,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            fixture.size,
+        )
+        .expect_err("invalid relocation table");
+        assert!(error.contains("relocation table is outside"));
+    }
 }

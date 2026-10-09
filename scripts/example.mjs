@@ -60,39 +60,10 @@ if (process.argv[1] === import.meta.filename) {
   else {
     await run(process.execPath, [viteBinary(project), "build"]);
     const require = createRequire(join(project, "package.json"));
-    const electron = require("electron");
-    const args = [".", ...(process.env.ELECTRON_GPUI_ELECTRON_ARGS?.split(" ").filter(Boolean) ?? [])];
-    const debuggerEnabled = process.env.ELECTRON_GPUI_SMOKE_DEBUGGER === "1";
     await run(
-      debuggerEnabled ? "gdb" : electron,
-      debuggerEnabled
-        ? [
-            "--batch",
-            "--return-child-result",
-            "-ex",
-            "set print thread-events off",
-            "-ex",
-            "handle SIGPIPE nostop noprint pass",
-            "-ex",
-            "run",
-            "-ex",
-            "bt 30",
-            "-ex",
-            "info proc mappings",
-            "--args",
-            electron,
-            ...args,
-          ]
-        : args,
-      {
-        ...(command === "smoke" ? { ELECTRON_GPUI_SMOKE: "1" } : {}),
-        ...(debuggerEnabled
-          ? {
-              LD_DEBUG: "bindings",
-              LD_DEBUG_OUTPUT: join(project, "../../.context/wayland-bindings"),
-            }
-          : {}),
-      },
+      require("electron"),
+      [".", ...(process.env.ELECTRON_GPUI_ELECTRON_ARGS?.split(" ").filter(Boolean) ?? [])],
+      command === "smoke" ? { ELECTRON_GPUI_SMOKE: "1" } : {},
     );
   }
 }
