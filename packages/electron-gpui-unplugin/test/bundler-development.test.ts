@@ -22,7 +22,7 @@ let entry: string;
 let out: string;
 let loaded: string[];
 const require = createRequire(import.meta.url);
-const realDlopen = process.dlopen;
+const realDlopen = process.dlopen.bind(process);
 
 beforeEach(() => {
   project = mkdtempSync(path.join(tmpdir(), "electron-gpui-development-"));
@@ -127,6 +127,7 @@ it("webpack watch preserves a loaded addon after a native source edit", async ()
     buildError = error;
     stats = result;
   });
+  if (!watcher) throw new Error("webpack watcher did not start");
   async function waitForAddon(bytes: string): Promise<void> {
     await vi.waitFor(
       () => {
