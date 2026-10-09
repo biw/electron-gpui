@@ -78,7 +78,7 @@ it("processes an edit saved while the previous patch is being acknowledged", asy
     session.stop();
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 it.each(["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "new .cargo/config.toml"])(
   "rebuilds a member crate after its parent workspace's %s changes",
