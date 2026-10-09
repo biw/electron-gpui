@@ -48,7 +48,7 @@ export interface WindowOptions {
   /**
    * `"hidden"` extends the content under a transparent titlebar and hides the
    * title, keeping the traffic lights, like `BrowserWindow`'s `titleBarStyle:
-   * "hidden"`. Applies on macOS; other platforms use native titlebars.
+   * "hidden"`. Applies on macOS; other platforms use the window system's titlebars.
    * Defaults to `"default"`.
    */
   titleBarStyle?: "default" | "hidden";

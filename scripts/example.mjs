@@ -49,10 +49,10 @@ if (process.argv[1] === import.meta.filename) {
         cleanup();
         reject(error);
       });
-      child.once("exit", (code) => {
+      child.once("exit", (code, signal) => {
         cleanup();
         if (code === 0) resolve();
-        else reject(new Error(`${binary} exited ${code}`));
+        else reject(new Error(`${binary} exited ${signal ?? code}`));
       });
     });
   if (command === "dev") await run(process.execPath, [viteBinary(project), "build", "--watch"]);

@@ -31,6 +31,7 @@ async function ready(test, child) {
 try {
   if (process.platform === "linux") {
     env.LIBGL_ALWAYS_SOFTWARE = "1";
+    env.ELECTRON_ENABLE_STACK_DUMPING = "1";
     env.ELECTRON_GPUI_ELECTRON_ARGS = `--ozone-platform=${display} --no-sandbox`;
     if (display === "x11") {
       delete env.WAYLAND_DISPLAY;
@@ -44,6 +45,9 @@ try {
       await ready(() => spawnSync("xdpyinfo", [], { env, stdio: "ignore" }).status === 0, server);
       start("openbox", [], "openbox");
     } else if (display === "wayland") {
+      // GPUI uses Mesa; Chromium also needs a deterministic software path when
+      // headless Weston has no DRM device (including older Electron versions).
+      env.ELECTRON_GPUI_ELECTRON_ARGS += " --disable-gpu";
       delete env.DISPLAY;
       delete env.WAYLAND_SOCKET;
       runtime = mkdtempSync(join(tmpdir(), "electron-gpui-wayland-"));

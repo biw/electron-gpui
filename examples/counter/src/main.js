@@ -12,11 +12,19 @@ const asset = (file) => fileURLToPath(new URL(`../${file}`, import.meta.url));
 
 const SMOKE = Boolean(process.env.ELECTRON_GPUI_SMOKE);
 const smokePanicLog = join(tmpdir(), `electron-gpui-smoke-panics-${process.pid}.jsonl`);
+const startupTimeout = SMOKE
+  ? setTimeout(() => {
+      console.error("[smoke] FAIL: Electron startup timed out after 30s");
+      app.exit(1);
+    }, 30_000).unref()
+  : undefined;
 
 void app
   .whenReady()
   .then(() => {
+    if (SMOKE) console.log(`[smoke] Electron ${process.versions.electron} ready; initializing GPUI`);
     const gpui = createGpui(addon, SMOKE ? { panicLog: smokePanicLog } : {});
+    if (startupTimeout) clearTimeout(startupTimeout);
     if (process.env.ELECTRON_GPUI_SMOKE === "hot") return runHotSmoke(gpui);
     if (SMOKE) return runSmokeTest(gpui);
 

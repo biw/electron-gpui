@@ -132,7 +132,7 @@ Hot patching uses [Subsecond](https://github.com/DioxusLabs/dioxus/tree/main/pac
 
 **CLI**: `electron-gpui init [dir] [--local <path>]` scaffolds a views crate. `electron-gpui build [dir] [--release] [--universal]` builds `<dir>/index.node` by hand (the plugin does this for you). Without a bundler, pass `new URL("./native/index.node", import.meta.url)` to `createGpui`.
 
-Window options are best effort. Traffic-light placement and hidden transparent titlebars apply on macOS; Windows and Linux use native titlebars. Blurred backgrounds fall back to transparency outside macOS, subject to compositor support. Always-on-top uses Windows topmost and X11 EWMH; ordinary Wayland windows have no portable topmost protocol, so the request is a no-op. `relativeLevel` affects macOS only. Positioning and focus on Wayland also depend on the compositor.
+Window options are best effort. Traffic-light placement and hidden transparent titlebars apply on macOS; Windows and Linux use the window system's titlebars. Wayland titlebar availability depends on compositor decoration support. Blurred backgrounds fall back to transparency outside macOS, subject to compositor support. Always-on-top uses Windows topmost and X11 EWMH; ordinary Wayland windows have no portable topmost protocol, so the request is a no-op. `relativeLevel` affects macOS only. Positioning and focus on Wayland also depend on the compositor.
 
 ## Shipping
 
