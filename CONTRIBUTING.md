@@ -52,7 +52,6 @@ GPUI comes from [`biw/zed`](https://github.com/biw/zed), branch `electron-gpui-e
 - Embedded Windows initialization, a GPUI-only message hook, no process-wide quit messages, and WARP fallback.
 - Embedded Linux initialization and nonblocking X11/Wayland event dispatch.
 - Portable always-on-top support for Windows and X11, with a default no-op on unsupported backends.
-- Vulkan rendering for Wayland hosts that export private Wayland symbols, avoiding Electron 30's collision with system EGL libraries.
 
 `Cargo.toml` pins it by `rev`.
 

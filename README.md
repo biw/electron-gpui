@@ -134,7 +134,7 @@ Hot patching uses [Subsecond](https://github.com/DioxusLabs/dioxus/tree/main/pac
 
 Window options are best effort. Traffic-light placement and hidden transparent titlebars apply on macOS; Windows and Linux use the window system's titlebars. Wayland titlebar availability depends on compositor decoration support. Blurred backgrounds fall back to transparency outside macOS, subject to compositor support. Always-on-top uses Windows topmost and X11 EWMH; ordinary Wayland windows have no portable topmost protocol, so the request is a no-op. `relativeLevel` affects macOS only. Positioning and focus on Wayland also depend on the compositor.
 
-Wayland uses Vulkan when Electron exports its own Wayland implementation (including Electron 30), avoiding a collision with system EGL libraries. Install a working Vulkan driver; Mesa's software Vulkan driver also works for development and CI.
+On Linux, GPUI binds system graphics libraries separately when Electron exports its own Wayland implementation (including Electron 30). This avoids collisions with Mesa's EGL/Vulkan drivers. A working graphics driver is required; Mesa's software graphics also work for development and CI.
 
 ## Shipping
 

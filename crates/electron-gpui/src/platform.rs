@@ -2,6 +2,9 @@
 use napi::Error;
 use napi::Result;
 
+#[cfg(target_os = "linux")]
+mod linux_graphics;
+
 #[cfg(target_os = "macos")]
 pub(crate) type EmbeddedPlatform = gpui_macos::MacPlatform;
 #[cfg(target_os = "windows")]
@@ -13,6 +16,9 @@ pub(crate) type EmbeddedPlatform = gpui_linux::LinuxPlatform;
 compile_error!("electron-gpui supports macOS, Windows MSVC, and Linux GNU");
 
 pub(crate) fn new() -> Result<EmbeddedPlatform> {
+    #[cfg(target_os = "linux")]
+    linux_graphics::prepare().map_err(Error::from_reason)?;
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         Ok(EmbeddedPlatform::new_embedded())
