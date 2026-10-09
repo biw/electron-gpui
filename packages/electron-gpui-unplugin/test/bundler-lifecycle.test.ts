@@ -47,7 +47,11 @@ vi.mock("../src/launcher.js", () => ({
 interface Watcher {
   on(
     event: "event",
-    callback: (event: { code: string; error?: unknown; result?: { close(): void | Promise<void> } }) => void,
+    callback: (event: {
+      code: string;
+      error?: unknown;
+      result?: { close(): void | Promise<void> } | null;
+    }) => void,
   ): unknown;
   close(): void | Promise<void>;
 }
