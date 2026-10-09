@@ -59,10 +59,10 @@ fn dependencies(roots: &HashSet<usize>, objects: &[Object]) -> HashSet<usize> {
     while let Some(base) = pending.pop() {
         if let Some(object) = by_base.get(&base) {
             for name in &object.needed {
-                if let Some(base) = by_name.get(name.as_slice()) {
-                    if selected.insert(*base) {
-                        pending.push(*base);
-                    }
+                if let Some(base) = by_name.get(name.as_slice())
+                    && selected.insert(*base)
+                {
+                    pending.push(*base);
                 }
             }
         }
