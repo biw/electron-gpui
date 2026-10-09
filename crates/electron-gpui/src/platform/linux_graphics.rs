@@ -3,10 +3,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+mod wayland_symbols;
+
 // Electron 30 exports a private Wayland implementation. Mesa's EGL/Vulkan
 // drivers and implicit layers otherwise bind to it while receiving objects
-// created by system libwayland. Keep the system graphics dependency groups
-// together before either renderer backend opens them.
+// created by system libwayland. Redirect only their Wayland imports; using
+// RTLD_DEEPBIND also changes allocator bindings and breaks Electron's allocator.
 pub(super) fn prepare() -> Result<(), String> {
     if (std::env::var_os("WAYLAND_DISPLAY").is_none()
         && std::env::var_os("WAYLAND_SOCKET").is_none())
@@ -17,8 +19,9 @@ pub(super) fn prepare() -> Result<(), String> {
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     PREPARED
         .get_or_init(|| {
-            bind(OsStr::new("libwayland-client.so.0"))?;
-            bind(OsStr::new("libwayland-cursor.so.0"))?;
+            let existing = wayland_symbols::loaded_objects();
+            let client = open(OsStr::new("libwayland-client.so.0"))?;
+            let cursor = open(OsStr::new("libwayland-cursor.so.0"))?;
             for manifest in graphics_manifests() {
                 if let Err(error) = bind_manifest(&manifest) {
                     // An installed driver may be for a different architecture,
@@ -29,7 +32,7 @@ pub(super) fn prepare() -> Result<(), String> {
                     }
                 }
             }
-            Ok(())
+            wayland_symbols::redirect(&existing, client, cursor, prepare as *const ())
         })
         .clone()
 }
@@ -55,18 +58,13 @@ fn host_exports_private_wayland() -> bool {
         .is_some_and(|name| name.as_bytes().starts_with(b"libwayland-client."))
 }
 
-fn bind(library: &OsStr) -> Result<(), String> {
+fn open(library: &OsStr) -> Result<*mut libc::c_void, String> {
     let name = CString::new(library.as_bytes()).map_err(|error| error.to_string())?;
     // GNU/glibc is the supported Linux target. Retain each handle for the
     // process lifetime: the renderer and applied patches may keep its pointers.
-    let handle = unsafe {
-        libc::dlopen(
-            name.as_ptr(),
-            libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_DEEPBIND,
-        )
-    };
+    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     if !handle.is_null() {
-        return Ok(());
+        return Ok(handle);
     }
     let error = unsafe { libc::dlerror() };
     let reason = if error.is_null() {
@@ -190,7 +188,7 @@ fn bind_manifest(path: &Path) -> Result<(), String> {
         } else {
             library.to_owned()
         };
-        bind(library.as_os_str())?;
+        open(library.as_os_str())?;
     }
     Ok(())
 }
