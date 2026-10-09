@@ -1,14 +1,18 @@
 # electron-gpui
 
-Run [GPUI](https://gpui.rs) — the UI framework behind the [Zed](https://zed.dev) editor — inside your Electron app. Supports macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). Pre-release.
+Run [GPUI](https://gpui.rs) — the UI framework behind the [Zed](https://zed.dev) editor — inside your Electron app. Supports macOS ARM64/Intel, Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland).
 
 ```sh
-pnpm add electron-gpui
-pnpm add -D electron-gpui-unplugin   # builds and bundles your Rust views
-npx electron-gpui init               # scaffold ./native, a Rust crate for your GPUI views
+npx electron-gpui init
 ```
 
-Add `electronGpui()` from `electron-gpui-unplugin/vite` (or `/rollup`, `/rolldown`, `/webpack`, `/esbuild`) to the bundler that builds your main process, then:
+The CLI detects pnpm, npm, Yarn or Bun, installs the runtime and bundler plugin, and scaffolds `./native`, a Rust crate for your GPUI views. Use `--skip-install` to scaffold without installing dependencies.
+
+Add `electronGpui()` from `electron-gpui-unplugin/vite` to the bundler that builds your main process. Adapters are also available for Rollup, Rolldown/tsdown, webpack and esbuild.
+
+If electron-vite or Electron Forge already runs your app, omit `electron: true`. For TypeScript, add `electron-gpui-unplugin/client` to `compilerOptions.types` in `tsconfig.json`.
+
+Then open a GPUI window:
 
 ```js
 import { app } from "electron";

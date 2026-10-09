@@ -1,5 +1,18 @@
 # electron-gpui-unplugin
 
+## 0.3.0
+
+### Minor Changes
+
+- Support Windows x64 and Linux x64 alongside macOS ARM64/Intel, including in-process hot patching and Windows-safe development addon loading. Protect webpack and esbuild debug addons across Windows rebuilds.
+- Close development sessions with their bundler watchers, coalesce Electron restarts, cancel queued patches during shutdown, and require the running addon to match the full build used for patching.
+- Restart development apps for layout attributes, type aliases, constants, function signatures, registration changes and inherited Cargo workspace configuration. Keep newly added path dependencies watched, detect configuration saves reliably on macOS, and keep ordinary function-body edits patchable.
+- Restrict Electron 30's Wayland import repair to the addon and its graphics driver dependency graph. Validate native builds and repeated hot patches in the complete cross-platform CI matrix.
+
+### Patch Changes
+
+- Update the peer dependency to electron-gpui@0.3.0.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { initSmoke } from "./init-smoke.mjs";
 const root = resolve(import.meta.dirname, "..");
 const directory = join(root, ".context/scaffold/native #1's views");
 rmSync(directory, { recursive: true, force: true });
 mkdirSync(join(root, ".context/scaffold"), { recursive: true });
 const cli = join(root, "packages/electron-gpui/dist/cli.mjs");
+initSmoke(cli);
 const instructions = execFileSync(
   process.execPath,
-  [cli, "init", directory, "--local", root, "--name", "scaffold-native"],
+  [cli, "init", directory, "--local", root, "--name", "scaffold-native", "--skip-install"],
   {
     cwd: root,
     encoding: "utf8",

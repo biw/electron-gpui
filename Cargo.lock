@@ -1310,7 +1310,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "electron-gpui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "electron-gpui-hotpatch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ar",

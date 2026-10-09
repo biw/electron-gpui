@@ -2,8 +2,6 @@
 
 Run [GPUI](https://gpui.rs), the GPU-accelerated UI framework behind [Zed](https://zed.dev), inside your Electron app. Write views in Rust, drive them from JavaScript, and edit them with hot reload.
 
-> **Pre-release.** Supports macOS (Apple silicon and Intel), Windows x64 (MSVC), and Linux x64 (GNU/glibc, X11 and Wayland). APIs may change before 1.0.
-
 ```js
 import { app } from "electron";
 import { createGpui } from "electron-gpui";
@@ -26,12 +24,10 @@ Requires Electron 30+, Node 20.19+ and [Rust](https://rustup.rs) (the toolchain 
 **1. Install and scaffold a views crate**
 
 ```sh
-pnpm add electron-gpui
-pnpm add -D electron-gpui-unplugin
-npx electron-gpui init   # creates ./native with an example view
+npx electron-gpui init
 ```
 
-> Before the first public release, use a local checkout: `pnpm add link:../electron-gpui/packages/electron-gpui`, `pnpm add -D link:../electron-gpui/packages/electron-gpui-unplugin`, then `npx electron-gpui init --local ../electron-gpui`.
+This detects your project's package manager (pnpm, npm, Yarn or Bun), installs `electron-gpui` and the `electron-gpui-unplugin` development dependency, and creates `./native` with an example view. Pass `--skip-install` to scaffold without installing dependencies.
 
 **2. Add the plugin to the bundler that builds your main process**
 
@@ -49,7 +45,19 @@ export default defineConfig({
 });
 ```
 
-Also available for Rollup, Rolldown/tsdown, webpack and esbuild (`electron-gpui-unplugin/<bundler>`). If electron-vite or Electron Forge already runs your app, drop `electron: true`. For TypeScript, add `"types": ["electron-gpui-unplugin/client"]` to `tsconfig.json`.
+Plugin adapters are also available for Rollup, Rolldown/tsdown, webpack and esbuild.
+
+If electron-vite or Electron Forge already runs your app, omit `electron: true`.
+
+For TypeScript, add `electron-gpui-unplugin/client` to `compilerOptions.types` in `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "types": ["electron-gpui-unplugin/client"]
+  }
+}
+```
 
 **3. Write views** in `native/src/lib.rs`
 
@@ -130,7 +138,7 @@ Hot patching uses [Subsecond](https://github.com/DioxusLabs/dioxus/tree/main/pac
 
 **Rust** (`electron-gpui` crate): implement `RootView` (`new`, `on_message`) and `Render`, emit events with `WindowBridge::emit`, and register views with `export! { "Name" => View }`. `electron_gpui::gpui` and `electron_gpui::serde_json` re-export the versions the SDK uses. GPUI's macros (`actions!`, `#[derive(IntoElement)]`, `#[derive(Action)]`, ...) expand to `gpui::` paths, so files that use them need `use electron_gpui::gpui;`. `electron_gpui::set_always_on_top(window, flag, relative_level)` works across platforms. The existing `electron_gpui::macos::set_always_on_top` helper remains available on macOS.
 
-**CLI**: `electron-gpui init [dir] [--local <path>]` scaffolds a views crate. `electron-gpui build [dir] [--release] [--universal]` builds `<dir>/index.node` by hand (the plugin does this for you). Without a bundler, pass `new URL("./native/index.node", import.meta.url)` to `createGpui`.
+**CLI**: `electron-gpui init [dir] [--local <path>] [--skip-install]` installs the JavaScript packages and scaffolds a views crate. `electron-gpui build [dir] [--release] [--universal]` builds `<dir>/index.node` by hand (the plugin does this for you). Without a bundler, pass `new URL("./native/index.node", import.meta.url)` to `createGpui`.
 
 Window options are best effort. Traffic-light placement and hidden transparent titlebars apply on macOS; Windows and Linux use the window system's titlebars. Wayland titlebar availability depends on compositor decoration support. Blurred backgrounds fall back to transparency outside macOS, subject to compositor support. Always-on-top uses Windows topmost and X11 EWMH; ordinary Wayland windows have no portable topmost protocol, so the request is a no-op. `relativeLevel` affects macOS only. Positioning and focus on Wayland also depend on the compositor.
 
@@ -156,10 +164,6 @@ On Linux, GPUI redirects its graphics libraries' Wayland imports to system libwa
 GPUI runs in an embedded mode that leaves the application's event loop to Electron. macOS shares `NSApp`; Windows hooks only GPUI window messages and can fall back to Direct3D WARP; Linux dispatches X11 or Wayland events through a nonblocking calloop poll every 8 ms on Electron's main thread. The Linux timer keeps the process alive while GPUI windows are open and stops on shutdown. Older addons without the optional polling export remain compatible.
 
 Your views, GPUI and the SDK compile into one `.node` addon, because Rust has no stable ABI for sharing GPUI between libraries. For hot reload, the plugin keeps a patchable build, recompiles changed code into a Mach-O, ELF or PE library, and has Subsecond redirect calls to it. Development addons use content-addressed filenames. Windows loads a process-owned copy so rebuilding never overwrites a loaded DLL; locked files are cleaned up after their process exits. Applied patch libraries remain loaded for the lifetime of the app.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

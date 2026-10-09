@@ -1,5 +1,15 @@
 # electron-gpui
 
+## 0.3.0
+
+### Minor Changes
+
+- Add Windows x64 (MSVC) and Linux x64 (GNU/glibc, X11 and native Wayland) support, including in-process hot patching. Preserve macOS ARM64/Intel support and the existing window API. Window chrome and always-on-top options use documented platform-specific fallbacks, with a portable Rust `electron_gpui::set_always_on_top` helper.
+- Discover Cargo's actual native library output on each platform and provide portable scaffold loading examples for paths containing spaces, apostrophes, or URL characters.
+- Automatically install the runtime and bundler plugin with the project's package manager during `electron-gpui init`. Use `--skip-install` to scaffold without installing dependencies.
+- Stop Linux event polling after a native failure while reporting the error once. Preserve window lifecycle events, panic logging and idempotent shutdown.
+- Validate builds, scaffolding, dependency licenses and Electron 30/latest smoke tests in the complete cross-platform CI matrix.
+
 ## 0.2.0
 
 ### Minor Changes

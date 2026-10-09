@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { nativeArtifact } from "./platform.js";
+import { installDependencies } from "./package-manager.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE_DIR = join(PACKAGE_ROOT, "templates", "native");
@@ -28,9 +29,10 @@ const MAC_TARGETS = { arm64: "aarch64-apple-darwin", x64: "x86_64-apple-darwin" 
 const USAGE = `electron-gpui ${VERSION}
 
 Usage:
-  electron-gpui init [dir] [--name <crate>] [--local <path>]
-      Scaffold a Rust crate for your GPUI views (default dir: native).
+  electron-gpui init [dir] [--name <crate>] [--local <path>] [--skip-install]
+      Install JavaScript packages and scaffold your views crate (default dir: native).
       --local <path>  depend on a local checkout of the electron-gpui repo
+      --skip-install scaffold without installing JavaScript dependencies
 
   electron-gpui build [dir] [--release] [--universal] [--out <file>]
       Build the crate in dir (default: native) into a .node addon
@@ -65,7 +67,11 @@ function init(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
-    options: { name: { type: "string" }, local: { type: "string" } },
+    options: {
+      name: { type: "string" },
+      local: { type: "string" },
+      "skip-install": { type: "boolean", default: false },
+    },
   });
   const dir = resolve(positionals[0] ?? "native");
   if (existsSync(dir) && readdirSync(dir).length > 0) {
@@ -85,13 +91,22 @@ function init(args: string[]): void {
   }
 
   copyTemplate(TEMPLATE_DIR, dir, { name, sdk });
+  if (!values["skip-install"]) {
+    try {
+      installDependencies(process.cwd());
+    } catch (error) {
+      fail(
+        `created ${relative(process.cwd(), dir) || "."}, but dependency installation failed: ${error instanceof Error ? error.message : String(error)}. Install electron-gpui and electron-gpui-unplugin with your package manager, then continue with the generated crate.`,
+      );
+    }
+  }
   const rel = relative(process.cwd(), dir) || ".";
   const addonUrl = `./${rel.split(sep).map(encodeURIComponent).join("/")}/index.node`;
   const shellDir =
     process.platform === "win32" ? `'${rel.replaceAll("'", "''")}'` : `'${rel.replaceAll("'", "'\\''")}'`;
   console.log(`Created ${rel}/ (crate ${name}).
 
-Next, add the bundler plugin (pnpm add -D electron-gpui-unplugin):
+Next, configure the bundler plugin:
   import electronGpui from "electron-gpui-unplugin/vite";
   export default defineConfig({ plugins: [electronGpui(${rel === "native" ? "" : `{ crate: ${JSON.stringify(rel)} }`})], ... });
 
